@@ -1,0 +1,25 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Project Overview: Subnet77 Liquidity Auction
+
+This project focuses on deploying and managing the `Subnet77LiquidityAuction` smart contract using Hardhat.
+
+## Core Contract
+
+*   The main contract is [`contracts/Subnet77LiquidityAuction.sol`](mdc:contracts/Subnet77LiquidityAuction.sol).
+*   **Important Note:** This contract file is currently a **hard link** to the original source file located at `/Users/creativebuilds/Projects/v3-bridge/contracts/Subnet77LiquidityAuction.sol`. Changes made via either path will affect the same underlying file.
+
+## Deployment
+
+*   Deployments are managed using the `hardhat-deploy` plugin.
+*   The deployment script for the auction contract is [`deploy/01-deploy-auction.js`](mdc:deploy/01-deploy-auction.js).
+*   This script deploys `Subnet77LiquidityAuction` and currently uses the deployer's address as the constructor's `_trustedAddress` argument for local testing.
+*   Deployments can be run using `npx hardhat deploy`. Specific scripts can be targeted using tags (e.g., `npx hardhat deploy --tags auction`).
+
+## Configuration
+
+*   Hardhat configuration is defined in [`hardhat.config.js`](mdc:hardhat.config.js). This file includes the necessary `require("hardhat-deploy")` statement and the `namedAccounts` configuration used by the deployment script.
+*   Node.js project dependencies, including Hardhat plugins, are listed in [`package.json`](mdc:package.json).
