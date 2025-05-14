@@ -1,0 +1,51 @@
+services:
+  ipfs:
+    image: ipfs/go-ipfs:latest
+    ports:
+      - "5001:5001"
+    volumes:
+      - graph-ipfs:/data/ipfs
+    profiles: [graph]
+
+  postgres:
+    image: postgres
+    environment:
+      POSTGRES_PASSWORD: "graph-node"
+      POSTGRES_USER: "graph-node"
+      POSTGRES_DB: "graph-node"
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+      LC_COLLATE: "C"
+      LC_CTYPE: "C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - graph-postgres:/var/lib/postgresql/data
+    profiles: [graph]
+
+  graph-node:
+    image: graphprotocol/graph-node
+    platform: linux/amd64
+    ports:
+      - "8050:8000"
+      - "8051:8001"
+      - "8070:8020"
+      - "8080:8030"
+      - "8090:8040"
+    depends_on:
+      - ipfs
+      - postgres
+    environment:
+      postgres_host: postgres
+      postgres_user: graph-node
+      postgres_pass: graph-node
+      postgres_db: graph-node
+      ipfs: "ipfs:5001"
+      ethereum: "subevm:http://host.docker.internal:9944"
+      GRAPH_LOG: info
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    profiles: [graph]
+
+volumes:
+  graph-ipfs:
+  graph-postgres:

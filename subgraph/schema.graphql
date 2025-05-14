@@ -1,0 +1,14 @@
+type Position @entity {
+  id: ID!
+  publicKey: Bytes!
+  poolAddress: Bytes!
+  weight: BigInt!
+  timestamp: BigInt!
+}
+
+type AddressRegistration @entity {
+  id: ID!
+  publicKey: Bytes!
+  ethAddress: Bytes!
+  timestamp: BigInt!
+} 

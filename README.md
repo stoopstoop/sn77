@@ -1,6 +1,8 @@
 # Subnet 77
 
-This subnet does not currently have a codebase and is being reserved for a later date
+~~This subnet does not currently have a codebase and is being reserved for a later date~~
+Subnet's codebase is actively being developed but not currently live.
+For latest updates and to watch development checkout the `dev` branch.
 
 (My favorite number is 7 and so I had to get 77)
 

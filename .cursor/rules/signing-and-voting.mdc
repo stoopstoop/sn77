@@ -1,0 +1,35 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# Signing and Voting Mechanism
+
+This document outlines how votes are signed and submitted to the `ClaimVote.sol` contract.
+
+## Overview
+
+Votes represent weighted preferences for liquidity pools managed by the [`Subnet77LiquidityAuction.sol`](mdc:contracts/Subnet77LiquidityAuction.sol) contract. Users sign a specific message format off-chain using their Bittensor key, and this signed message is relayed to the [`ClaimVote.sol`](mdc:contracts/ClaimVote.sol) contract via an EVM transaction.
+
+## Contract Interaction
+
+*   The target function is `updatePositions(string message, bytes signature, bytes32 publicKey)` in [`ClaimVote.sol`](mdc:contracts/ClaimVote.sol).
+*   **`message`:** A string containing semicolon-separated pool votes, formatted as `"poolId1,weight1;poolId2,weight2;..."`. The weights must sum to 10000.
+*   **`signature`:** The raw Ed25519 signature (64 bytes) of the UTF-8 encoded `message` string.
+*   **`publicKey`:** The raw Ed25519 public key (32 bytes) corresponding to the private key used to generate the `signature`.
+*   The contract uses the [`VerifySignature.sol`](mdc:contracts/VerifySignature.sol) library to verify the Ed25519 `signature` against the `message` and `publicKey`.
+*   It also checks if the `poolId`(s) in the `message` correspond to *active* pools by querying the [`Subnet77LiquidityAuction.sol`](mdc:contracts/Subnet77LiquidityAuction.sol) contract via the [`ISubnet77LiquidityAuction.sol`](mdc:interfaces/ISubnet77LiquidityAuction.sol) interface.
+
+## Signing Script
+
+*   The [`scripts/vote.py`](mdc:scripts/vote.py) script automates this process.
+*   It takes the vote message string (`--votes`) and the Bittensor wallet name (`--wallet.name`) as arguments.
+*   It loads the specified Bittensor wallet using `bittensor.wallet()`.
+*   **Signing Key:** It currently uses the wallet's **coldkey** (`wallet.coldkeypub`) to sign the vote message, assuming the coldkey is Ed25519.
+*   **EVM Transaction:** It uses the `PRIVATE_KEY` defined in the `.env` file to sign and send the actual `updatePositions` transaction to the EVM network.
+*   **Dependencies:** Requires Python 3, the `.venv` virtual environment activated, and packages like `bittensor`, `web3.py`, `python-dotenv` installed.
+
+## Important Notes
+
+*   **Key Security:** The security of the voting process relies on the security of the Bittensor private keys used for signing. The EVM private key only pays for gas.
+*   **Wallet Unlocking:** If the Bittensor wallet key used for signing (currently coldkey) is encrypted, running `scripts/vote.py` may trigger an interactive password prompt in the terminal.

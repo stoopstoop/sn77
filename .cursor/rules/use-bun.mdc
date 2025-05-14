@@ -1,0 +1,13 @@
+---
+description:
+globs:
+alwaysApply: true
+---
+
+# Preferred Runtime: Bun
+
+This project uses Bun as the preferred JavaScript runtime and package manager.
+
+*   Use `bun install` instead of `npm install` or `yarn install`.
+*   Use `bun run <script>` instead of `npm run <script>` or `yarn <script>`.
+*   Use `bunx` instead of `npx`.
