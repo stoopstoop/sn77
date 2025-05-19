@@ -40,7 +40,9 @@ services:
       postgres_pass: graph-node
       postgres_db: graph-node
       ipfs: "ipfs:5001"
-      ethereum: "subevm:http://host.docker.internal:9944"
+      # LOCAL TEST ethereum: "subevm:http://host.docker.internal:9944"
+      # PROD-NOT WORKING ethereum: "subevm:wss://api.taostats.io/api/v1/rpc/ws/finney_archive?authorization=${TAOSTATS_PRO_API_KEY}"
+      ethereum: "subevm:https://archive.chain.opentensor.ai"
       GRAPH_LOG: info
     extra_hosts:
       - "host.docker.internal:host-gateway"
