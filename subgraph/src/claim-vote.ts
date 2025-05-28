@@ -1,9 +1,9 @@
-import { BigInt, Bytes } from "@graphprotocol/graph-ts"
+import { BigInt, Bytes, store } from "@graphprotocol/graph-ts"
 import {
   AddressRegistered,
   PositionsUpdated
 } from "../generated/ClaimVote/ClaimVote"
-import { Position, AddressRegistration } from "../generated/schema"
+import { Position, AddressRegistration, PublicKeyPositions } from "../generated/schema"
 
 export function handleAddressRegistered(event: AddressRegistered): void {
   const id = event.params.publicKey.toHexString()
@@ -21,17 +21,37 @@ export function handleAddressRegistered(event: AddressRegistered): void {
 export function handlePositionsUpdated(event: PositionsUpdated): void {
   const positions = event.params.positions
   const publicKey = event.params.publicKey
+  const publicKeyHex = publicKey.toHexString()
+
+  let publicKeyPositions = PublicKeyPositions.load(publicKey)
+
+  if (publicKeyPositions) {
+    const oldPositionIds = publicKeyPositions.positionIds
+    for (let i = 0; i < oldPositionIds.length; i++) {
+      store.remove("Position", oldPositionIds[i])
+    }
+    publicKeyPositions.positionIds = []
+  } else {
+    publicKeyPositions = new PublicKeyPositions(publicKey)
+    publicKeyPositions.positionIds = []
+  }
+
+  let newPositionIds = publicKeyPositions.positionIds
   
   for (let i = 0; i < positions.length; i++) {
     const position = positions[i]
-    const id = publicKey.toHexString() + "-" + position.poolAddress.toHexString() + "-" + i.toString()
+    const positionId = publicKeyHex + "-" + position.poolAddress.toHexString() + "-" + i.toString()
     
-    let positionEntity = new Position(id)
+    let positionEntity = new Position(positionId)
     positionEntity.publicKey = publicKey
     positionEntity.poolAddress = position.poolAddress
     positionEntity.weight = position.weight
     positionEntity.timestamp = event.block.timestamp
-    
     positionEntity.save()
+
+    newPositionIds.push(positionId)
   }
+
+  publicKeyPositions.positionIds = newPositionIds
+  publicKeyPositions.save()
 } 

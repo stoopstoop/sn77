@@ -16,6 +16,7 @@ dataSources:
       entities:
         - Position
         - AddressRegistration
+        - PublicKeyPositions
       abis:
         - name: ClaimVote
           file: ./abis/ClaimVote.json

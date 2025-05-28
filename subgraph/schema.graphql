@@ -11,4 +11,9 @@ type AddressRegistration @entity {
   publicKey: Bytes!
   ethAddress: Bytes!
   timestamp: BigInt!
+}
+
+type PublicKeyPositions @entity {
+  id: Bytes! # The publicKey
+  positionIds: [String!]! # List of Position entity IDs
 } 
