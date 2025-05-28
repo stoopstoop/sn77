@@ -303,105 +303,55 @@ async function main() {
 
     async function fetchVotePositions(): Promise<[Record<string, VotePosition[]>, Error | null]> {
         try {
-            console.log('Fetching positions from Graph Node...');
+            console.log("Fetching positions from Graph Node (paginated)...");
             const subgraphUrl = process.env.SUBGRAPH_URL;
-            if (!subgraphUrl) {
-                console.error('Error: SUBGRAPH_URL environment variable not set.');
-                return [{}, new Error('SUBGRAPH_URL not configured')];
-            }
+            if (!subgraphUrl) return [{}, new Error("SUBGRAPH_URL not configured")];
 
-            // Use the environment variable for the fetch URL
-            const response = await fetch(subgraphUrl, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    query: `
-                        query {
-                            positions(
-                                skip: 0
-                                first: 100
-                                orderBy: id
-                                orderDirection: asc
-                                subgraphError: deny
-                            ) {
-                                id
-                                publicKey
-                                poolAddress
-                                weight
-                                timestamp
-                            }
-                        }
-                    `
-                })
-            });
+            const PAGE_SIZE = 1000;
+            let skip = 0;
+            const allPositions: any[] = [];
 
-            console.log('Graph Node response status:', response.status);
-            const responseText = await response.text();
+            while (true) {
+                const query = `query {\n              positions(first: ${PAGE_SIZE}, skip: ${skip}, orderBy: id, orderDirection: asc, subgraphError: deny) {\n                id\n                publicKey\n                poolAddress\n                weight\n                timestamp\n              }\n            }`;
 
-            if (!response.ok) {
-                console.error(`Graph query failed with status ${response.status}: ${responseText}`);
-                return [{}, new Error(`Graph query failed: ${response.statusText}`)];
-            }
-
-            const result = JSON.parse(responseText);
-            if (result.errors) {
-                console.error('Graph query errors:', result.errors);
-                return [{}, new Error(`Graph query errors: ${JSON.stringify(result.errors)}`)];
-            }
-
-            if (!result.data?.positions) { // Use optional chaining
-                console.log('No positions data found in response.');
-                return [{}, null];
-            }
-
-            const positions = result.data.positions as any[]; // Add type assertion for clarity
-            if (positions.length === 0) {
-                console.log('No positions returned from Graph Node.');
-                return [{}, null];
-            }
-
-            // Transform the data into the required format
-            const positionsMap: Record<string, VotePosition[]> = {};
-            positions.forEach((pos) => {
-                if (!pos.publicKey) {
-                    console.warn('Skipping position with missing publicKey:', pos); // Use warn for skippable issues
-                    return;
-                }
-                
-                let address: string;
-                try {
-                    // DEVELOPER NOTE: Ensure publicKey is a valid hex string or Uint8Array for encodeAddress
-                    address = encodeAddress(pos.publicKey);
-                } catch (encodeError) {
-                    console.error(`Failed to encode publicKey ${pos.publicKey}:`, encodeError);
-                    return; // Skip this position if encoding fails
-                }
-
-                if (!positionsMap[address]) {
-                    positionsMap[address] = [];
-                }
-
-                const weight = Number(pos.weight);
-                if (isNaN(weight)) {
-                    console.warn(`Skipping position with invalid weight for address ${address}:`, pos);
-                    return;
-                }
-
-                
-                positionsMap[address].push({
-                    poolAddress: getAddress(pos.poolAddress),
-                    weight: weight
+                const resp = await fetch(subgraphUrl, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ query })
                 });
-            });
 
-            console.log('Processed positions map created.'); // Simplified log
+                const text = await resp.text();
+                if (!resp.ok) return [{}, new Error(`Graph query failed (${resp.status}): ${text}`)];
+                const result = JSON.parse(text);
+                if (result.errors) return [{}, new Error(`Graph query errors: ${JSON.stringify(result.errors)}`)];
+
+                const batch: any[] = result.data?.positions ?? [];
+                allPositions.push(...batch);
+                console.log(`Fetched ${batch.length} positions (skip=${skip}).`);
+
+                if (batch.length < PAGE_SIZE) break; // last page reached
+                skip += PAGE_SIZE;
+            }
+
+            if (allPositions.length === 0) return [{}, null];
+
+            const positionsMap: Record<string, VotePosition[]> = {};
+            for (const pos of allPositions) {
+                if (!pos.publicKey) continue;
+                let addr: string;
+                try { addr = encodeAddress(pos.publicKey); } catch { continue; }
+                if (!positionsMap[addr]) positionsMap[addr] = [];
+                const w = Number(pos.weight);
+                if (isNaN(w)) continue;
+                let pool = "";
+                try { pool = getAddress(pos.poolAddress); } catch { continue; }
+                positionsMap[addr].push({ poolAddress: pool, weight: w });
+            }
+
             return [positionsMap, null];
 
         } catch (err) {
-            console.error('Error fetching positions:', err);
-            const error = err instanceof Error ? err : new Error('Unknown error fetching positions');
+            const error = err instanceof Error ? err : new Error("Unknown error fetching positions");
             return [{}, error];
         }
     }
@@ -658,7 +608,9 @@ async function main() {
 
         emaWeights = updateEma(emaWeights, finalMinerWeights);
         userLog('Updated EMA weights');
-        const top = Object.entries(emaWeights).sort((a, b) => b[1] - a[1]).slice(0, 10);
+
+        const [displayEmaWeights] = await normalizeFinalMinerWeights(emaWeights);
+        const top = Object.entries(displayEmaWeights).sort((a, b) => b[1] - a[1]).slice(0, 10);
         importantLog(`--- Loop ${iteration} Top EMA Weights ---`);
         top.forEach(([uid, weight], idx) => {
             const ck = miners[uid] ?? 'N/A';
