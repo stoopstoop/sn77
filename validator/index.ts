@@ -34,11 +34,79 @@ import { ApiPromise, WsProvider } from '@polkadot/api';
 import { Keyring } from '@polkadot/keyring';
 import type { ISubmittableResult } from '@polkadot/types/types';
 
+// ----------------------
+//  Logging Configuration
+// ----------------------
+// Must be set up *before* other imports execute arbitrary logging.
+const LOG_CONSOLE = (process.env.LOG || 'false').toLowerCase() === 'true';
+const logDir = path.join(__dirname, '..', 'logs');
+fs.mkdir(logDir, { recursive: true }).catch(() => {});
+const LOG_FILE_PATH = path.join(logDir, `validator-${new Date().toISOString().slice(0, 10)}.log`);
+
+// Preserve originals
+const _origLog = console.log.bind(console);
+const _origWarn = console.warn.bind(console);
+const _origError = console.error.bind(console);
+
+const appendLog = (level: string, args: any[]): void => {
+    const line = `[${new Date().toISOString()}] ${level}: ` + args.map(a => {
+        if (typeof a === 'string') return a;
+        try { return JSON.stringify(a); } catch { return String(a); }
+    }).join(' ');
+    
+    // Append the new line
+    fs.appendFile(LOG_FILE_PATH, line + '\n').then(async () => {
+        // Check if we need to trim the log file
+        try {
+            const stats = await fs.stat(LOG_FILE_PATH);
+            if (stats.size > 0) {
+                const content = await fs.readFile(LOG_FILE_PATH, 'utf-8');
+                const lines = content.split('\n');
+                if (lines.length > 10000) {
+                    const trimmedLines = lines.slice(-10000); // Keep last 10000 lines
+                    await fs.writeFile(LOG_FILE_PATH, trimmedLines.join('\n'));
+                }
+            }
+        } catch (trimErr) {
+            // Silently ignore trim errors to avoid logging loops
+        }
+    }).catch(() => {});
+};
+
+console.log = (...args: any[]): void => {
+    appendLog('LOG', args);
+    if (LOG_CONSOLE) _origLog(...args);
+};
+
+console.warn = (...args: any[]): void => {
+    appendLog('WARN', args);
+    if (LOG_CONSOLE) _origWarn(...args);
+};
+
+console.error = (...args: any[]): void => {
+    appendLog('ERROR', args);
+    _origError(...args); // always show errors
+};
+
+// For messages that should *always* be shown to the user, regardless of LOG flag
+function importantLog(...args: any[]): void {
+    appendLog('IMPORTANT', args);
+    _origLog(...args);
+}
+
+function userLog(...args: any[]): void {
+    _origLog(`[${new Date().toISOString()}]`, ...args);
+}
+
 // Promisify execFile for async/await usage
 const execFileAsync = promisify(execFile);
 
 // Load environment variables from .env file
 dotenv.config();
+
+// Toggle test mode via env var; when true, weights are not pushed on-chain
+const TEST_MODE = (process.env.TEST_MODE || 'false').toLowerCase() === 'true';
+if (TEST_MODE) console.log('Running in TEST_MODE: on-chain setWeights will be skipped.');
 
 interface VotePosition {
     poolAddress: string;
@@ -173,10 +241,40 @@ let btApi: ApiPromise | null = null;
 let signer: ReturnType<Keyring['addFromUri']> | null = null;
 
 async function initializeBittensor(): Promise<Error | null> {
+    async function attemptReconnect(wsUrl: string): Promise<void> {
+        let delayMs = 1000; // start with 1s
+        while (true) {
+            try {
+                userLog(`Attempting Bittensor WS reconnection...`);
+                const newProvider = new WsProvider(wsUrl);
+                const newApi = await ApiPromise.create({ provider: newProvider });
+                await newApi.isReady;
+
+                btApi = newApi;
+                userLog(`Reconnected to Bittensor WS`);
+                // re-attach disconnect handler
+                newProvider.on('disconnected', () => {
+                    userLog('Bittensor WS disconnected');
+                    void attemptReconnect(wsUrl);
+                });
+                break;
+            } catch (reErr) {
+                console.error('Reconnection attempt failed:', reErr);
+                await delay(delayMs);
+                delayMs = Math.min(delayMs * 2, 30000); // cap at 30s
+            }
+        }
+    }
+
     try {
         if (btApi) return null; // already initialized
         const wsUrl = process.env.BITTENSOR_WS_URL || 'wss://entrypoint-finney.opentensor.ai:443';
         const provider = new WsProvider(wsUrl);
+        provider.on('disconnected', () => {
+            userLog('Bittensor WS disconnected');
+            void attemptReconnect(wsUrl);
+        });
+
         btApi = await ApiPromise.create({ provider });
         await btApi.isReady;
 
@@ -192,7 +290,6 @@ async function initializeBittensor(): Promise<Error | null> {
             // eslint-disable-next-line @typescript-eslint/ban-ts-comment
             // @ts-ignore
             const uidCodec = await btApi.query.subtensorModule.keyToUid(NETUID, signer.address);
-            // Some chains return 0 for unregistered hotkeys
             const uidNum = (uidCodec as any)?.toNumber ? (uidCodec as any).toNumber() : 0;
             if (uidNum === 0) return new Error('Hotkey not registered on subnet');
         }
@@ -470,68 +567,120 @@ async function main() {
             return [{}, error];
         }
     }
-    const [positions, positionsErr] = await fetchVotePositions();
-    if (positionsErr) return [null, new Error(`Failed to fetch positions: ${positionsErr.message}`)];
 
-    const [balances, balancesErr] = await fetchBalances(positions);
-    if (balancesErr) return [null, new Error(`Failed to fetch balances: ${balancesErr.message}`)];
+    const bittensorErr = await initializeBittensor();
+    if (bittensorErr) return [null, new Error(`Failed to initialize Bittensor: ${bittensorErr.message}`)];
 
-    console.log("Calculating pool weights");
-    const [poolWeights, poolWeightsErr] = CalculatePoolWeights(positions, balances);
-    if (poolWeightsErr) return [null, new Error(`Failed to update pool weights: ${poolWeightsErr.message}`)];
+    // ---------------------------
+    //  PERIODIC LOOP W/ EMA LOGIC
+    // ---------------------------
+    const LOOP_DELAY_MS = Number(process.env.LOOP_DELAY_MS || 300000); // default 5 minutes
+    const SET_INTERVAL_MS = Number(process.env.SET_INTERVAL_MS || 72 * 60 * 1000); // 72 minutes
+    const EMA_ALPHA = Number(process.env.EMA_ALPHA || 0.2);
 
-    console.log("Calculated Pool Weights (Vote-Based):", poolWeights);
-    
-    // --- Miner Liquidity Integration ---
-    // The following steps use mock data for demonstration
+    let emaWeights: Record<string, number> = {};
+    let lastSet = Date.now();
+    let iteration = 0;
 
-    // 4. Get Miners
-    console.log("Step 4: Fetching miners (mock)...");
-    const [miners, minersErr] = await getMiners();
-    if (minersErr) return [undefined, new Error(`Failed run: ${minersErr.message}`)];
-    // console.log("Step 4: Miners fetched.", miners); // Less verbose log
+    const updateEma = (prev: Record<string, number>, curr: Record<string, number>): Record<string, number> => {
+        const keys = new Set([...Object.keys(prev), ...Object.keys(curr)]);
+        const next: Record<string, number> = {};
+        for (const k of keys) next[k] = EMA_ALPHA * (curr[k] ?? 0) + (1 - EMA_ALPHA) * (prev[k] ?? 0);
+        return next;
+    };
 
-    // 5. Get Miner ETH Addresses
-    // console.log("Step 5: Fetching miner ETH addresses (mock)...");
-    const [minerAddresses, minerAddressesErr] = await getMinerAddresses(miners);
-    if (minerAddressesErr) return [undefined, new Error(`Failed run: ${minerAddressesErr.message}`)];
-    console.log("Step 5: Miner addresses fetched.", minerAddresses); // Less verbose log
+    // Helper to ensure each loop starts after exactly LOOP_DELAY_MS
+    const waitRemaining = async (startTime: number): Promise<Error | null> => {
+        let remaining = LOOP_DELAY_MS - (Date.now() - startTime);
+        if (remaining <= 0) return null;
 
-    // 6. Get Miner Liquidity Positions
-    console.log("Step 6: Fetching miner liquidity positions (mock)...");
-    const [minerLiquidityPositions, minerLiquidityPositionsErr] = await getMinerLiquidityPositions(minerAddresses);
-    if (minerLiquidityPositionsErr) return [undefined, new Error(`Failed run: ${minerLiquidityPositionsErr.message}`)];
-    // console.log("Step 6: Miner liquidity positions generated."); // Less verbose log
+        if (!LOG_CONSOLE) {
+            // Display dynamic countdown in seconds on the same console line
+            while (remaining > 0) {
+                const secs = Math.ceil(remaining / 1000);
+                process.stdout.write(`\rNext iteration in ${secs}s   `);
+                const step = Math.min(1000, remaining);
+                await delay(step);
+                remaining -= step;
+            }
+            process.stdout.write('\r\n'); // move to next line after countdown finishes
+        } else {
+            await delay(remaining);
+        }
+        return null;
+    };
 
-    // 7. Calculate Pool-Specific Normalized Position Scores
-    console.log("Step 7: Calculating & Normalizing Pool-Specific Position Scores...");
-    const [normalizedPositionScores, normScoresErr] = await calculateAndNormalizePoolScores(minerLiquidityPositions);
-    if (normScoresErr) return [undefined, new Error(`Failed run: ${normScoresErr.message}`)];
-    // console.log("Normalized Position Scores:", normalizedPositionScores); // Can be very verbose
+    while (true) {
+        iteration++;
+        userLog(`Iteration ${iteration} started`);
 
-    // 8. Calculate Final Miner Weights (Vote-Weighted Contributions)
-    console.log("Step 8: Calculating Final Miner Weights...");
-    // Pass poolWeights (checksummed keys) and normalizedPositionScores here
-    const [finalMinerWeights, finalWeightsErr] = await calculateFinalMinerWeights(minerLiquidityPositions, normalizedPositionScores, poolWeights); 
-    if (finalWeightsErr) return [undefined, new Error(`Failed run: ${finalWeightsErr.message}`)];
-    console.log("Final Miner Weights (Before Chain Normalization):", finalMinerWeights);
+        const startTime = Date.now();
 
-    // Note: The final weights need to be normalized again (sum to 1) before setting on the chain.
-    // The `finalMinerWeights` calculated here represent the relative contribution based on pool votes.
-    console.log("Step 9: - Normalize `finalMinerWeights` and set on the network.");
+        const [positions, posErr] = await fetchVotePositions();
+        if (posErr) { console.error(posErr); await waitRemaining(startTime); continue; }
+        userLog(`Fetched vote positions: ${Object.keys(positions).length}`);
 
-    const [normalizedFinalMinerWeights, normalizedFinalMinerWeightsErr] = await normalizeFinalMinerWeights(finalMinerWeights);
-    if (normalizedFinalMinerWeightsErr) return [undefined, new Error(`Failed run: ${normalizedFinalMinerWeightsErr.message}`)];
-    console.log("Normalized Final Miner Weights:", normalizedFinalMinerWeights);
+        const [balances, balErr] = await fetchBalances(positions);
+        if (balErr) { console.error(balErr); await waitRemaining(startTime); continue; }
+        userLog("Fetched balances");
 
-    // 9. Set Weights on Network
-    console.log("Step 9: Setting weights on the network...");
-    const [setWeightsResult, setWeightsErr] = await setWeightsOnNetwork(normalizedFinalMinerWeights);
-    if (setWeightsErr) return [undefined, new Error(`Failed run: ${setWeightsErr.message}`)];
-    console.log("Weights set on the network:", setWeightsResult);
+        const [poolWeights, poolErr] = CalculatePoolWeights(positions, balances);
+        if (poolErr) { console.error(poolErr); await waitRemaining(startTime); continue; }
+        userLog(`Calculated pool weights: ${Object.keys(poolWeights).length} pools`);
 
-    console.log("--- Validator Run Completed Successfully (with Mock Data/Placeholders) ---");
-    return [undefined, null]; // Success
+        const [miners, minersErr] = await getMiners();
+        if (minersErr) { console.error(minersErr); await waitRemaining(startTime); continue; }
+        userLog(`Fetched miners: ${Object.keys(miners).length}`);
+
+        const [minerAddresses, addrErr] = await getMinerAddresses(miners);
+        if (addrErr) { console.error(addrErr); await waitRemaining(startTime); continue; }
+        userLog(`Fetched miner addresses: ${Object.keys(minerAddresses).length}`);
+
+        // Fetch active liquidity providers for target pools (informational)
+        const [activeOwners, activeErr] = await fetchActivePoolAddresses();
+        if (activeErr) {
+            console.error(activeErr);
+        } else {
+            userLog(`Active pool addresses fetched: ${activeOwners.size}`);
+        }
+
+        const [minerLiquidityPositions, liqErr] = await getMinerLiquidityPositions(minerAddresses);
+        if (liqErr) { console.error(liqErr); await waitRemaining(startTime); continue; }
+        userLog("Fetched miner liquidity positions");
+
+        const [normalizedPositionScores, normPosErr] = await calculateAndNormalizePoolScores(minerLiquidityPositions);
+        if (normPosErr) { console.error(normPosErr); await waitRemaining(startTime); continue; }
+        userLog("Calculated normalized position scores");
+
+        const [finalMinerWeights, finalWeightsErr] = await calculateFinalMinerWeights(minerLiquidityPositions, normalizedPositionScores, poolWeights);
+        if (finalWeightsErr) { console.error(finalWeightsErr); await waitRemaining(startTime); continue; }
+        userLog("Calculated final miner weights");
+
+        emaWeights = updateEma(emaWeights, finalMinerWeights);
+        userLog('Updated EMA weights');
+        const top = Object.entries(emaWeights).sort((a, b) => b[1] - a[1]).slice(0, 10);
+        importantLog(`--- Loop ${iteration} Top EMA Weights ---`);
+        top.forEach(([uid, weight], idx) => {
+            const ck = miners[uid] ?? 'N/A';
+            const shortCk = ck === 'N/A' ? ck : `${ck.slice(0, 4)}...${ck.slice(-4)}`;
+            importantLog(`${idx + 1}. UID ${uid} => ${weight.toFixed(6)} (${shortCk})`);
+        });
+
+        if (Date.now() - lastSet >= SET_INTERVAL_MS) {
+            console.log('72-minute interval reached, pushing EMA weights on-chain');
+            const [normalizedEma, normErr] = await normalizeFinalMinerWeights(emaWeights);
+            if (!normErr) {
+                const [_, setErr] = await setWeightsOnNetwork(normalizedEma);
+                if (setErr) console.error(setErr); else console.log('Weights successfully set');
+            } else {
+                console.error(normErr);
+            }
+            lastSet = Date.now();
+        }
+
+        userLog(`Iteration ${iteration} completed in ${((Date.now()-startTime)/1000).toFixed(1)}s`);
+        await waitRemaining(startTime);
+    }
 }
 
 async function normalizeFinalMinerWeights(finalMinerWeights: Record<string, number>): Promise<Result<Record<string, number>>> {
@@ -545,6 +694,22 @@ async function normalizeFinalMinerWeights(finalMinerWeights: Record<string, numb
 
 async function setWeightsOnNetwork(normalizedFinalMinerWeights: Record<string, number>): Promise<Result<Record<string, number>>> {
     try {
+        if (TEST_MODE) {
+            // Write the would be weights to a timestamped JSON file for inspection
+            try {
+                const weightsDir = path.join(logDir, 'weights');
+                await fs.mkdir(weightsDir, { recursive: true });
+                const ts = new Date().toISOString().replace(/[:.]/g, '-');
+                const filePath = path.join(weightsDir, `${ts}.json`);
+                await fs.writeFile(filePath, JSON.stringify(normalizedFinalMinerWeights, null, 2));
+                userLog(`[TEST_MODE] Weights saved to ${filePath}`);
+            } catch (fileErr) {
+                console.error('[TEST_MODE] Failed to write weights file:', fileErr);
+            }
+            console.log('[TEST_MODE] Skipping setWeightsOnNetwork call. Weights that would be set:', JSON.stringify(normalizedFinalMinerWeights, null, 2));
+            return [normalizedFinalMinerWeights, null];
+        }
+
         if (!btApi || !signer) return [{}, new Error('Bittensor API not initialized')];
 
         const entries = Object.entries(normalizedFinalMinerWeights);
@@ -805,8 +970,11 @@ function CalculatePoolWeights(positions: Record<string, VotePosition[]>, balance
             
             // Validate balance value
             const balance = balances[address].balance;
-            if (typeof balance !== 'number' || isNaN(balance) || balance <= 0) {
+            if (typeof balance !== 'number' || isNaN(balance) || balance < 0) {
                 console.error(`Invalid balance ${balance} for address ${address}`);
+                return false;
+            } else if (balance === 0) {
+                console.warn(`Zero balance found for address ${address}`);
                 return false;
             }
             
@@ -1036,7 +1204,7 @@ async function getMinerLiquidityPositions(minerAddresses: Record<string, string>
     }
 
     const subgraphId = "5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV";
-    const subgraphUrl = `https://gateway.thegraph.com/api/${apiKey}/subgraphs/id/${subgraphId}`;
+    const subgraphUrl = `https://gateway.thegraph.com/api/subgraphs/id/${subgraphId}`;
 
     console.log(`Fetching liquidity positions for ${numMiners} miners from The Graph: ${subgraphUrl}`);
 
@@ -1359,6 +1527,64 @@ async function getMinerAddresses(miners: Record<string, string>): Promise<Result
         console.error("Error fetching or processing miner addresses from subgraph:", err);
         const error = err instanceof Error ? err : new Error("Failed to fetch miner addresses");
         return [{}, error];
+    }
+}
+
+// ---------- The Graph helper ----------
+
+const DEFAULT_TARGET_POOLS = [
+    '0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640',
+    '0x433a00819c771b33fa7223a5b3499b24fbcd1bbc',
+];
+
+/**
+ * Fetches unique owner addresses that have active liquidity (>1) in the provided pools.
+ * Uses the TheGraph endpoint specified via THEGRAPH_API_KEY (Bearer token).
+ */
+async function fetchActivePoolAddresses(poolIds: string[] = DEFAULT_TARGET_POOLS): Promise<Result<Set<string>>> {
+    const apiKey = process.env.THEGRAPH_API_KEY;
+    if (!apiKey) return [new Set(), new Error('THEGRAPH_API_KEY not configured')];
+
+    const subgraphId = '5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV';
+    const subgraphUrl = `https://gateway.thegraph.com/api/subgraphs/id/${subgraphId}`;
+
+    const owners = new Set<string>();
+    const pageSize = 1000;
+
+    try {
+        for (const poolId of poolIds) {
+            let skip = 0;
+            while (true) {
+                const query = `query($poolId: String!, $first: Int!, $skip: Int!) {
+                    positions(where:{liquidity_gt:"1", pool_: {id: $poolId}}, first: $first, skip: $skip, orderBy: id, orderDirection: asc, subgraphError: deny) {
+                        owner
+                    }
+                }`;
+
+                const resp = await fetch(subgraphUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${apiKey}`,
+                    },
+                    body: JSON.stringify({ query, variables: { poolId: poolId.toLowerCase(), first: pageSize, skip } }),
+                });
+
+                const text = await resp.text();
+                if (!resp.ok) return [new Set(), new Error(`GraphQL error ${resp.status}: ${text}`)];
+                const result = JSON.parse(text);
+                if (result.errors) return [new Set(), new Error(JSON.stringify(result.errors))];
+
+                const positions = result.data?.positions ?? [];
+                positions.forEach((p: { owner: string }) => owners.add(p.owner.toLowerCase()));
+
+                if (positions.length < pageSize) break; // done with this pool
+                skip += pageSize;
+            }
+        }
+        return [owners, null];
+    } catch (e) {
+        return [new Set(), e instanceof Error ? e : new Error(String(e))];
     }
 }
 
