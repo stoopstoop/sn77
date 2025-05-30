@@ -22,14 +22,10 @@
  * 5. Aggregate and display total token amounts per pool
  */
 
-import * as dotenv from 'dotenv';
 import { parseUnits } from 'ethers';
 import { computePoolWeights } from '../utils/poolWeights';
 import { getMiners, getMinerAddresses, getMinerLiquidityPositions, type LiquidityPosition } from '../utils/miners';
-// import chalk from 'chalk';
-// import Table from 'cli-table3';
 
-dotenv.config();
 
 interface PoolLiquidityData {
   totalToken0: bigint;

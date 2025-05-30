@@ -1,8 +1,24 @@
 import { encodeAddress } from '@polkadot/util-crypto';
 import { getAddress } from 'ethers';
-import dotenv from 'dotenv';
 
+let _env: Record<string, string> = {};
+Object.keys(process.env).forEach(key => {
+    _env[key] = process.env[key] ?? '';
+    delete process.env[key];
+  });
+
+import dotenv from 'dotenv';
 dotenv.config();
+
+let _env2: Record<string, string> = {};
+Object.keys(process.env).forEach(key => {
+    _env2[key] = process.env[key] ?? '';
+    delete process.env[key];
+  });
+
+  console.log(_env2);
+
+process.env = {..._env2/*, ..._env*/, PYTHONPATH: _env.PYTHONPATH, PATH: _env.PATH};
 
 // Standard [value, err] tuple type
 export type Result<T> = [T, Error | null];
@@ -17,6 +33,7 @@ const delay = (ms: number) => new Promise<void>(res => setTimeout(res, ms));
  */
 export async function fetchVotePositions(): Promise<Result<Record<string, VotePosition[]>>> {
     try {
+        console.log(process.env);
         const subgraphUrl = process.env.SUBGRAPH_URL;
         if (!subgraphUrl) return [{}, new Error('SUBGRAPH_URL not configured')];
 
@@ -73,12 +90,13 @@ export async function fetchBalances(votePositions: Record<string, VotePosition[]
     const limit = 200;
     let offset = 0, page = 1, totalPages = 1;
     const all: any[] = [];
-    const maxRetries = 3, initDelay = 1000, proactiveDelay = 1000;
+    const initDelay = 1000, proactiveDelay = 1000, maxBackoff = 60000;
 
     while (page <= totalPages) {
-        let retries = 0, done = false;
-        while (!done && retries <= maxRetries) {
-            if (page > 1 || retries > 0) await delay(proactiveDelay);
+        let done = false, backoff = initDelay;
+        while (!done) {
+            if (page > 1 || backoff > initDelay) await delay(proactiveDelay);
+
             const url = `${baseUrl}?netuid=77&limit=${limit}&offset=${offset}&order=balance_desc`;
             let resp: Response | undefined; let text = '';
             try {
@@ -93,13 +111,16 @@ export async function fetchBalances(votePositions: Record<string, VotePosition[]
                     all.push(...j.data);
                     done = true;
                 } catch { return [{}, new Error('Failed to parse Taostats response')]; }
-            } else if (resp?.status === 429) {
-                retries++;
-                if (retries > maxRetries) return [{}, new Error('Rate limit exceeded')];
-                await delay(initDelay * (2 ** (retries - 1)));
-            } else {
-                return [{}, new Error(`Taostats request failed: ${resp?.status} ${text}`)];
+                continue;
             }
+
+            if (resp?.status === 429) {
+                await delay(backoff);
+                backoff = Math.min(backoff * 2, maxBackoff);
+                continue;
+            }
+
+            return [{}, new Error(`Taostats request failed: ${resp?.status} ${text}`)];
         }
         page++; offset += limit;
     }
