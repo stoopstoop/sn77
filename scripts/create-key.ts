@@ -8,6 +8,15 @@ import { hideBin } from 'yargs/helpers';
 import { blake2AsU8a, encodeAddress } from '@polkadot/util-crypto';
 import { hexToU8a, stringToU8a } from '@polkadot/util';
 
+// dynamic chalk loader to avoid ESM import issues
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let chalk: any;
+
+const loadChalk = async (): Promise<any> => {
+  if (!chalk) chalk = (await import('chalk')).default;
+  return chalk;
+};
+
 type CliArgs = {
   'private-key'?: string;
   mnemonic?: string;
@@ -41,13 +50,20 @@ const prompt = (q: string): Promise<string> =>
 
 dotenv.config();
 
-async function main(): Promise<[void, Error | null]> {
-  const existing = process.env.PRIVATE_KEY;
-  if (existing) {
-    const yn = (await prompt('A private key already exists in .env, overwrite? (y/n): ')).toLowerCase();
-    if (yn !== 'y') return [undefined, null];
-  }
+async function intro(): Promise<boolean> {
+  const c = await loadChalk();
+  const msg = `${c.cyanBright('This script will create an EVM compatible Bittensor account.')}
 
+${c.gray('This account is just used to interact with the SN77\'s Contract.\nThis should be a different account from the registered miner.')}
+
+Continue? [Y/n] `;
+  const answer = (await prompt(msg)).trim().toLowerCase();
+  return answer === '' || answer === 'y' || answer === 'yes';
+}
+
+async function main(): Promise<[void, Error | null]> {
+  if (!(await intro())) return [undefined, null];
+  
   let wallet: ethers.Wallet | ethers.HDNodeWallet;
   let mnemonic: string | null = null;
 
@@ -79,8 +95,11 @@ async function main(): Promise<[void, Error | null]> {
     ss58Address = encodeAddress(substrateId, 42);
   } catch {}
 
-  console.log(`wallet address: ${address}`);
-  if (ss58Address) console.log(`ss58 address: ${ss58Address}`);
+  const c = await loadChalk();
+  console.log(c.greenBright('\nWallet Details'));
+  console.log(`${c.blue('EVM Address:')} ${c.yellowBright(address)}`);
+  if (ss58Address) console.log(`${c.blue('SS58 Address:')} ${c.yellowBright(ss58Address)}`);
+  console.log('');
 
   const keysDir = path.join(process.cwd(), '.keys');
   fs.mkdirSync(keysDir, { recursive: true });
@@ -90,23 +109,41 @@ async function main(): Promise<[void, Error | null]> {
     keyPath,
     JSON.stringify({ address, privateKey, mnemonic, ss58Address: ss58Address || null }, null, 2)
   );
-  console.log(`key saved to ${keyPath}`);
+  console.log(`key saved to ${keyPath}\n`);
 
-  const envPath = path.join(process.cwd(), '.env');
-  let env = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : '';
-  const upd = (key: string, val: string | undefined): void => {
-    if (!val) return;
-    const regex = new RegExp(`${key}=.*(?:\r?\n|$)`, 'i');
-    env = regex.test(env) ? env.replace(regex, `${key}=${val}\n`) : `${env}${key}=${val}\n`;
-  };
-  upd('PRIVATE_KEY', privateKey);
-  upd('ADDRESS', address);
-  if (ss58Address) upd('SS58_ADDRESS', ss58Address);
-  fs.writeFileSync(envPath, env.trim() + '\n');
-  console.log('.env updated');
+  const existing = process.env.ETH_PRIVKEY;
+  let shouldUpdateEnv = true;
+  
+  if (existing) {
+    const yn = (await prompt('A private key already exists in .env, update with new key? [y/N]: ')).trim().toLowerCase();
+    shouldUpdateEnv = yn === 'y' || yn === 'yes';
+  } else {
+    const yn = (await prompt('Update .env file with new credentials? [Y/n]: ')).trim().toLowerCase();
+    shouldUpdateEnv = yn === '' || yn === 'y' || yn === 'yes';
+  }
 
-  if (mnemonic) console.log(`mnemonic: ${mnemonic}`);
-  console.log('keep these credentials safe');
+  if (shouldUpdateEnv) {
+    const envPath = path.join(process.cwd(), '.env');
+    let env = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : '';
+    const upd = (key: string, val: string | undefined): void => {
+      if (!val) return;
+      const regex = new RegExp(`${key}=.*(?:\r?\n|$)`, 'i');
+      env = regex.test(env) ? env.replace(regex, `${key}=${val}\n`) : `${env}${key}=${val}\n`;
+    };
+    upd('ETH_PRIVKEY', privateKey);
+    upd('ADDRESS', address);
+    if (ss58Address) upd('SS58_ADDRESS', ss58Address);
+    fs.writeFileSync(envPath, env.trim() + '\n');
+    console.log((await loadChalk()).gray('.env updated'));
+  } else {
+    console.log((await loadChalk()).gray('.env not updated'));
+  }
+
+  const c2 = await loadChalk();
+  console.log('\n' + c2.cyanBright(' -- Next steps --') + c2.cyanBright('\nFund the wallet with a small amount of TAO for gas fees (e.g., 0.02 TAO)\nThen you can run the following commands:') + "\n");
+  console.log(c2.magenta('bunx tsx scripts/register.ts') + c2.gray(' # Link an Ethereum Wallet to a Miner'));
+  console.log(c2.magenta('bunx tsx scripts/vote.ts') + c2.gray(' # Vote for Liquidity Pools') + '\n');
+
   return [undefined, null];
 }
 

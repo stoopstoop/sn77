@@ -1,24 +1,28 @@
 import { encodeAddress } from '@polkadot/util-crypto';
 import { getAddress } from 'ethers';
+import dotenv from 'dotenv';    
 
-let _env: Record<string, string> = {};
-Object.keys(process.env).forEach(key => {
-    _env[key] = process.env[key] ?? '';
-    delete process.env[key];
-  });
+const NO_ENV = process.env.NO_ENV === 'true';
 
-import dotenv from 'dotenv';
-dotenv.config();
+if (NO_ENV) {
+  let _env: Record<string, string> = {};
+  Object.keys(process.env).forEach(key => {
+      _env[key] = process.env[key] ?? '';
+      delete process.env[key];
+    });
 
-let _env2: Record<string, string> = {};
-Object.keys(process.env).forEach(key => {
-    _env2[key] = process.env[key] ?? '';
-    delete process.env[key];
-  });
+  dotenv.config();
 
-  console.log(_env2);
+  let _env2: Record<string, string> = {};
+  Object.keys(process.env).forEach(key => {
+      _env2[key] = process.env[key] ?? '';
+      delete process.env[key];
+    });
 
-process.env = {..._env2/*, ..._env*/, PYTHONPATH: _env.PYTHONPATH, PATH: _env.PATH};
+  process.env = {..._env2, PYTHONPATH: _env.PYTHONPATH, PATH: _env.PATH};
+} else {
+  dotenv.config();
+}
 
 // Standard [value, err] tuple type
 export type Result<T> = [T, Error | null];
@@ -33,7 +37,6 @@ const delay = (ms: number) => new Promise<void>(res => setTimeout(res, ms));
  */
 export async function fetchVotePositions(): Promise<Result<Record<string, VotePosition[]>>> {
     try {
-        console.log(process.env);
         const subgraphUrl = process.env.SUBGRAPH_URL;
         if (!subgraphUrl) return [{}, new Error('SUBGRAPH_URL not configured')];
 

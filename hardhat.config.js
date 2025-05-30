@@ -1,16 +1,32 @@
 require("@nomicfoundation/hardhat-toolbox");
 require("hardhat-deploy");
-require("dotenv").config();
+const path = require("path");
 
-// Retrieve private key from environment variable
-const ETH_PRIVKEY = process.env.ETH_PRIVKEY || "";
-if (ETH_PRIVKEY === "") {
-  throw new Error("ETH_PRIVKEY is not set");
+require("dotenv").config({
+  path: path.resolve(process.cwd(), process.env.HARDHAT_NETWORK === 'bittensorLocal' ? '.env.local' : '.env'),
+  override: true
+});
+
+if(!process.env.ETH_SIGN_KEY) {
+  throw new Error("ETH_SIGN_KEY is not set");
 }
+if(!process.env.ETH_LP_KEY) {
+  throw new Error("ETH_LP_KEY is not set");
+}
+
 
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
-  solidity: "0.8.28",
+  solidity: {
+    version: "0.8.28",
+    settings: {
+      optimizer: {
+        enabled: true,
+        runs: 200,
+      },
+      viaIR: true,
+    },
+  },
   namedAccounts: {
     deployer: {
       default: 0,
@@ -22,12 +38,12 @@ module.exports = {
     },
     bittensorLocal: {
       url: "http://localhost:9944",
-      accounts: ETH_PRIVKEY !== "" ? [ETH_PRIVKEY] : [],
+      accounts: [process.env.ETH_SIGN_KEY, process.env.ETH_LP_KEY],
       chainId: 6969,
     },
     bittensorMainnet: {
       url: "https://lite.chain.opentensor.ai",
-      accounts: ETH_PRIVKEY !== "" ? [ETH_PRIVKEY] : [],
+      accounts: [process.env.ETH_SIGN_KEY, process.env.ETH_LP_KEY],
       chainId: 964,
     },
     // You can add other networks like testnet here if needed

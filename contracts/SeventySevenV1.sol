@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 import "./VerifySignature.sol";
 
-contract ClaimVote {
+contract SeventySevenV1 {
     using VerifySignatureLib for bytes32;
     using VerifySignatureLib for bytes;
 
@@ -13,6 +13,7 @@ contract ClaimVote {
     }
 
     mapping(bytes32 => address) public keyToAddress;
+    mapping(address => bytes32) public addressToKey;
     mapping(bytes32 => Position[]) public keyToPositions;
 
     event AddressRegistered(bytes32 indexed publicKey, address indexed ethAddress);
@@ -89,7 +90,24 @@ contract ClaimVote {
             revert InvalidSignature();
         }
 
+        // Clear previous association for this public key if it pointed to a different address
+        address existingEth = keyToAddress[publicKey];
+        if (existingEth != address(0) && existingEth != ethAddress) {
+            delete addressToKey[existingEth];
+            emit AddressRegistered(publicKey, address(0));
+        }
+
+        // Clear previous association for this address if it pointed to a different public key
+        bytes32 existingKey = addressToKey[ethAddress];
+        if (existingKey != bytes32(0) && existingKey != publicKey) {
+            delete keyToAddress[existingKey];
+            emit AddressRegistered(existingKey, address(0));
+        }
+
+        // Store new one-to-one association
         keyToAddress[publicKey] = ethAddress;
+        addressToKey[ethAddress] = publicKey;
+
         emit AddressRegistered(publicKey, ethAddress);
     }
 

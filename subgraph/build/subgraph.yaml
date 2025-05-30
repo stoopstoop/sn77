@@ -3,12 +3,12 @@ schema:
   file: schema.graphql
 dataSources:
   - kind: ethereum
-    name: ClaimVote
+    name: SeventySevenV1
     network: subevm
     source:
-      address: "0x5FbDB2315678afecb367f032d93F642f64180aa3"
-      abi: ClaimVote
-      startBlock: 0
+      address: "0x112672034ac4577e10201c76cBC8b71dc444B935"
+      abi: SeventySevenV1
+      startBlock: 5673468
     mapping:
       kind: ethereum/events
       apiVersion: 0.0.7
@@ -16,12 +16,13 @@ dataSources:
       entities:
         - Position
         - AddressRegistration
+        - PublicKeyPositions
       abis:
-        - name: ClaimVote
-          file: ClaimVote/ClaimVote.json
+        - name: SeventySevenV1
+          file: SeventySevenV1/SeventySevenV1.json
       eventHandlers:
         - event: AddressRegistered(indexed bytes32,indexed address)
           handler: handleAddressRegistered
         - event: PositionsUpdated(indexed bytes32,(address,uint256)[])
           handler: handlePositionsUpdated
-      file: ClaimVote/ClaimVote.wasm
+      file: SeventySevenV1/SeventySevenV1.wasm

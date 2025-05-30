@@ -1,21 +1,32 @@
-import { BigInt, Bytes, store } from "@graphprotocol/graph-ts"
+import { BigInt, Bytes, store, Address } from "@graphprotocol/graph-ts"
 import {
   AddressRegistered,
   PositionsUpdated
-} from "../generated/ClaimVote/ClaimVote"
+} from "../generated/SeventySevenV1/SeventySevenV1"
 import { Position, AddressRegistration, PublicKeyPositions } from "../generated/schema"
 
 export function handleAddressRegistered(event: AddressRegistered): void {
   const id = event.params.publicKey.toHexString()
+  const ethAddress = event.params.ethAddress
+  const isZeroAddress = ethAddress.equals(Address.zero())
+  
   let registration = AddressRegistration.load(id)
+  
+  if (isZeroAddress) {
+    if (registration) {
+      store.remove("AddressRegistration", id)
+    }
+    return
+  }
   
   if (!registration) {
     registration = new AddressRegistration(id)
     registration.publicKey = event.params.publicKey
-    registration.ethAddress = event.params.ethAddress
-    registration.timestamp = event.block.timestamp
-    registration.save()
   }
+  
+  registration.ethAddress = ethAddress
+  registration.timestamp = event.block.timestamp
+  registration.save()
 }
 
 export function handlePositionsUpdated(event: PositionsUpdated): void {

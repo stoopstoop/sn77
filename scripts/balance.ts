@@ -7,6 +7,7 @@ async function getEVMBalance(): Promise<[void, Error | null]> {
     const rpcUrls: Record<string, string> = {
       mainnet: 'https://lite.chain.opentensor.ai',
       testnet: 'https://test.chain.opentensor.ai',
+      localnet: 'http://localhost:9944'
     };
 
     const network = process.env.NETWORK ?? 'mainnet';

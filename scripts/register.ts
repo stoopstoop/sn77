@@ -8,11 +8,11 @@ import { cryptoWaitReady } from '@polkadot/util-crypto';
 import { hexToU8a } from '@polkadot/util';
 import dotenv from 'dotenv';
 
-dotenv.config({ path: path.resolve(process.cwd(), '.env.tao') });
+dotenv.config({ path: path.resolve(process.cwd(), process.env.HARDHAT_NETWORK === 'bittensorLocal' ? '.env.local' : '.env'), override: true });
 
-const claimVoteAddress = process.env.TAO_CLAIM_VOTE_ADDRESS;
-if (!claimVoteAddress) {
-  console.error('TAO_CLAIM_VOTE_ADDRESS not set in .env.tao');
+const seventySevenV1ContractAddress = process.env.SEVENTY_SEVEN_V1_CONTRACT_ADDRESS;
+if (!seventySevenV1ContractAddress) {
+  console.error('SEVENTY_SEVEN_V1_CONTRACT_ADDRESS not set in .env');
   process.exit(1);
 }
 
@@ -56,21 +56,24 @@ async function main(): Promise<[void, Error | null]> {
 
   console.log('starting registration...');
 
-  const [signer] = await ethers.getSigners();
+  const accounts = await ethers.getSigners();
+  console.log(accounts);
+  const sender = accounts[0];
+  const signer = accounts[1];
   const ethAddress = signer.address;
+  const btPubKeyHex = ethers.hexlify(claimVoteKeypair.publicKey);
 
-  const proceed = await ask(` ${claimVoteKeypair.address} (Bittensor)\n ${ethAddress} (Ethereum)\n proceed?`);
+  const proceed = await ask(`${claimVoteKeypair.address} (Bittensor SS58)\n${btPubKeyHex} (Bittensor PubKey Hex)\n${signer.address} (Ethereum)\n proceed?`);
   if (!proceed) return [undefined, null];
 
-  const claimVote = await ethers.getContractAt('ClaimVote', claimVoteAddress);
-  const btPubKeyHex = ethers.hexlify(claimVoteKeypair.publicKey);
+  const seventySevenV1 = await ethers.getContractAt('SeventySevenV1', seventySevenV1ContractAddress);
   const ethMsgHash = ethers.keccak256(btPubKeyHex);
   const ethSig = await signer.signMessage(ethers.getBytes(ethMsgHash));
   const edMsgHashBytes = ethers.getBytes(ethers.solidityPackedKeccak256(['address'], [signer.address]));
   const edSig = ethers.hexlify(claimVoteKeypair.sign(edMsgHashBytes));
 
   try {
-    const tx = await claimVote.registerAddress(btPubKeyHex, signer.address, ethSig, edSig);
+    const tx = await seventySevenV1.connect(sender).registerAddress(btPubKeyHex, signer.address, ethSig, edSig);
     console.log(`tx ${tx.hash} submitted, waiting...`);
     const receipt = await tx.wait();
     if (receipt?.status !== 1) return [undefined, new Error('transaction reverted')];
@@ -78,7 +81,7 @@ async function main(): Promise<[void, Error | null]> {
     return [undefined, err as Error];
   }
 
-  const stored = await claimVote.keyToAddress(btPubKeyHex);
+  const stored = await seventySevenV1.connect(sender).keyToAddress(btPubKeyHex);
   if (stored.toLowerCase() !== signer.address.toLowerCase()) return [undefined, new Error('verification failed')];
 
   console.log('registration successful');
