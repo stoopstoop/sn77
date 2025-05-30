@@ -20,5 +20,8 @@
     "rxjs": "^7.8.2",
     "winston": "^3.17.0",
     "yargs": "^17.7.2"
+  },
+  "scripts": {
+    "pools": "bunx tsx scripts/pools.ts"
   }
 }

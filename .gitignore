@@ -19,6 +19,10 @@ ignition/deployments/chain-31337
 
 .venv
 .keys
+.cache
+
+
 
 deployments/
 output/
+logs/

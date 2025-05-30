@@ -33,6 +33,8 @@ import { getAddress } from 'ethers';
 import { ApiPromise, WsProvider } from '@polkadot/api';
 import { Keyring } from '@polkadot/keyring';
 import type { ISubmittableResult } from '@polkadot/types/types';
+import { computePoolWeights } from '../utils/poolWeights';
+import { getMiners as getMinersUtil, getMinerAddresses as getMinerAddressesUtil, getMinerLiquidityPositions as getMinerLiquidityPositionsUtil, fetchActivePoolAddresses as fetchActivePoolAddressesUtil } from '../utils/miners';
 
 // ----------------------
 //  Logging Configuration
@@ -140,9 +142,9 @@ interface LiquidityPosition {
     pool?: {
         feeTier: string;
         id: string;
-        tick: string;
-        token0Price: string;
-        token1Price: string;
+        tick?: string;
+        token0Price?: string;
+        token1Price?: string;
     };
 }
 
@@ -535,7 +537,22 @@ async function main() {
     const updateEma = (prev: Record<string, number>, curr: Record<string, number>): Record<string, number> => {
         const keys = new Set([...Object.keys(prev), ...Object.keys(curr)]);
         const next: Record<string, number> = {};
-        for (const k of keys) next[k] = EMA_ALPHA * (curr[k] ?? 0) + (1 - EMA_ALPHA) * (prev[k] ?? 0);
+        for (const k of keys) {
+            const prevVal = prev[k] ?? 0;
+            const currVal = curr[k] ?? 0;
+            
+            // Safety check for NaN or invalid values
+            const safePrev = isFinite(prevVal) ? prevVal : 0;
+            const safeCurr = isFinite(currVal) ? currVal : 0;
+            
+            next[k] = EMA_ALPHA * safeCurr + (1 - EMA_ALPHA) * safePrev;
+            
+            // Additional safety check on the result
+            if (!isFinite(next[k])) {
+                console.warn(`EMA calculation resulted in invalid value for key ${k}, setting to 0`);
+                next[k] = 0;
+            }
+        }
         return next;
     };
 
@@ -566,35 +583,28 @@ async function main() {
 
         const startTime = Date.now();
 
-        const [positions, posErr] = await fetchVotePositions();
-        if (posErr) { console.error(posErr); await waitRemaining(startTime); continue; }
-        userLog(`Fetched vote positions: ${Object.keys(positions).length}`);
-
-        const [balances, balErr] = await fetchBalances(positions);
-        if (balErr) { console.error(balErr); await waitRemaining(startTime); continue; }
-        userLog("Fetched balances");
-
-        const [poolWeights, poolErr] = CalculatePoolWeights(positions, balances);
+        const [poolWeightTuple, poolErr] = await computePoolWeights();
         if (poolErr) { console.error(poolErr); await waitRemaining(startTime); continue; }
-        userLog(`Calculated pool weights: ${Object.keys(poolWeights).length} pools`);
+        const [poolWeights] = poolWeightTuple; // normalized weights from shared logic
+        userLog(`Calculated pool weights (shared logic): ${Object.keys(poolWeights).length} pools`);
 
-        const [miners, minersErr] = await getMiners();
+        const [miners, minersErr] = await getMinersUtil();
         if (minersErr) { console.error(minersErr); await waitRemaining(startTime); continue; }
         userLog(`Fetched miners: ${Object.keys(miners).length}`);
 
-        const [minerAddresses, addrErr] = await getMinerAddresses(miners);
+        const [minerAddresses, addrErr] = await getMinerAddressesUtil(miners);
         if (addrErr) { console.error(addrErr); await waitRemaining(startTime); continue; }
         userLog(`Fetched miner addresses: ${Object.keys(minerAddresses).length}`);
 
         // Fetch active liquidity providers for target pools (informational)
-        const [activeOwners, activeErr] = await fetchActivePoolAddresses();
+        const [activeOwners, activeErr] = await fetchActivePoolAddressesUtil();
         if (activeErr) {
             console.error(activeErr);
         } else {
             userLog(`Active pool addresses fetched: ${activeOwners.size}`);
         }
 
-        const [minerLiquidityPositions, liqErr] = await getMinerLiquidityPositions(minerAddresses);
+        const [minerLiquidityPositions, liqErr] = await getMinerLiquidityPositionsUtil(minerAddresses);
         if (liqErr) { console.error(liqErr); await waitRemaining(startTime); continue; }
         userLog("Fetched miner liquidity positions");
 
@@ -638,8 +648,27 @@ async function main() {
 async function normalizeFinalMinerWeights(finalMinerWeights: Record<string, number>): Promise<Result<Record<string, number>>> {
     const normalizedFinalMinerWeights: Record<string, number> = {};
     const totalWeight = Object.values(finalMinerWeights).reduce((sum, weight) => sum + weight, 0);
+    
+    // Handle case where totalWeight is 0, NaN, or invalid
+    if (!totalWeight || totalWeight <= 0 || !isFinite(totalWeight)) {
+        const minerIds = Object.keys(finalMinerWeights);
+        const uniformWeight = minerIds.length > 0 ? 1 / minerIds.length : 0;
+        
+        console.warn(`Invalid or zero total weight (${totalWeight}), using uniform distribution: ${uniformWeight.toFixed(6)} per miner`);
+        for (const minerId of minerIds) {
+            normalizedFinalMinerWeights[minerId] = uniformWeight;
+        }
+        return [normalizedFinalMinerWeights, null];
+    }
+    
     for (const [minerId, weight] of Object.entries(finalMinerWeights)) {
-        normalizedFinalMinerWeights[minerId] = weight / totalWeight;
+        // Additional safety check for individual weights
+        if (!isFinite(weight) || weight < 0) {
+            console.warn(`Invalid weight ${weight} for miner ${minerId}, setting to 0`);
+            normalizedFinalMinerWeights[minerId] = 0;
+        } else {
+            normalizedFinalMinerWeights[minerId] = weight / totalWeight;
+        }
     }
     return [normalizedFinalMinerWeights, null];
 }
