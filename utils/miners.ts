@@ -23,10 +23,8 @@ export async function runGetMinersScript(netuid: number, network: string): Promi
     const scriptPath = path.join(__dirname, 'get-miners.py');
     const pythonExecutable = process.env.PYTHON_EXECUTABLE || 'python';
 
-    console.log(`Executing ${pythonExecutable} ${scriptPath} ${netuid} --network ${network}...`);
-
     try {
-        const { stdout, stderr } = await execFileAsync(pythonExecutable, [
+        const { stderr } = await execFileAsync(pythonExecutable, [
             scriptPath,
             netuid.toString(),
             '--network',
@@ -34,7 +32,6 @@ export async function runGetMinersScript(netuid: number, network: string): Promi
         ]);
 
         if (stderr) throw new Error(`Python script execution failed with stderr: ${stderr}`);
-        console.log(`get-miners.py stdout: ${stdout}`);
     } catch (error) {
         throw new Error(`Failed to execute get-miners.py: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -69,7 +66,6 @@ export async function getMiners(): Promise<Result<Record<string, string>>> {
         }
 
         if (Object.keys(minerMap).length === 0) return [{}, null];
-        console.log(`Fetched ${Object.keys(minerMap).length} miners.`);
         return [minerMap, null];
     } catch (err) {
         const error = err instanceof Error ? err : new Error('Failed to get miner data');
@@ -84,6 +80,8 @@ export interface LiquidityPosition {
     token0: { id: string; symbol: string; name: string; decimals: string };
     token1: { id: string; symbol: string; name: string; decimals: string };
     liquidity: string;
+    depositedToken0: string;
+    depositedToken1: string;
     tickLower: { id: string; tickIdx: string };
     tickUpper: { id: string; tickIdx: string };
     pool?: { id: string; feeTier: string; tick?: string; token0Price?: string; token1Price?: string };
@@ -131,9 +129,9 @@ export async function getMinerAddresses(miners: Record<string, string>): Promise
 }
 
 const DEFAULT_POOLS = [
-    // '0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640',
+    '0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640',
     '0x433a00819c771b33fa7223a5b3499b24fbcd1bbc',
-];
+].filter(p => p.toLowerCase());
 
 /**
  * Fetch liquidity positions for the given miners from the Uniswap-V3 subgraph.
@@ -148,6 +146,9 @@ export async function getMinerLiquidityPositions(minerAddresses: Record<string, 
     const subgraphId = '5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV';
     const url = `https://gateway.thegraph.com/api/subgraphs/id/${subgraphId}`;
 
+    // Ensure pool IDs are lowercase to match how The Graph stores addresses
+    const poolIds = pools.map(p => p.toLowerCase());
+
     const addrToUid = new Map<string, string>();
     for (const [uid, addr] of Object.entries(minerAddresses)) addrToUid.set(addr.toLowerCase(), uid);
 
@@ -157,11 +158,11 @@ export async function getMinerLiquidityPositions(minerAddresses: Record<string, 
 
     for (let i = 0; i < ethAddresses.length; i += batchSize) {
         const owners = ethAddresses.slice(i, i + batchSize).map(a => a.toLowerCase());
-        const query = `query($owners:[String!]!,$pools:[String!]!,$limit:Int!){positions(first:$limit,where:{owner_in:$owners,liquidity_gt:"1",pool_:{id_in:$pools}}){id owner liquidity tickLower{id tickIdx} tickUpper{id tickIdx} token0{id symbol name decimals} token1{id symbol name decimals} pool{id feeTier tick token0Price token1Price}}}`;
+        const query = `query($owners:[String!]!,$pools:[String!]!,$limit:Int!){positions(first:$limit,where:{owner_in:$owners,liquidity_gt:"1",pool_:{id_in:$pools}}){id owner liquidity depositedToken0 depositedToken1 tickLower{id tickIdx} tickUpper{id tickIdx} token0{id symbol name decimals} token1{id symbol name decimals} pool{id feeTier tick token0Price token1Price}}}`;
         const r = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-            body: JSON.stringify({ query, variables: { owners, pools, limit } })
+            body: JSON.stringify({ query, variables: { owners, pools: poolIds, limit } })
         });
         const txt = await r.text();
         if (!r.ok) continue;
@@ -180,8 +181,6 @@ export async function getMinerLiquidityPositions(minerAddresses: Record<string, 
     for (const uid of Object.keys(minerAddresses)) if (!out[uid]) out[uid] = [];
     return [out, null];
 }
-
-
 
 /** Fetch unique owner addresses that currently have liquidity in the given pools. */
 export async function fetchActivePoolAddresses(poolIds: string[] = DEFAULT_POOLS): Promise<Result<Set<string>>> {
