@@ -30,8 +30,8 @@ deploy-subgraph:
   npm install
   graph codegen
   graph build
-  graph create --node http://localhost:8070/ claim-vote || true
-  graph deploy --node http://localhost:8070/ --ipfs http://localhost:5001 claim-vote --version-label "v0.0.1"
+  graph create --node http://localhost:8070/ seventy-seven || true
+  graph deploy --node http://localhost:8070/ --ipfs http://localhost:5001 seventy-seven --version-label "v0.0.1"
 
 booted-echo:
   @echo "Booted"
