@@ -90,7 +90,7 @@ export interface LiquidityPosition {
 interface SubgraphPosition extends LiquidityPosition {} // identical shape for casting
 
 /**
- * Fetch ETH addresses that miners registered via ClaimVote contract.
+ * Fetch ETH addresses that miners registered via SeventySevenV1 contract.
  */
 export async function getMinerAddresses(miners: Record<string, string>): Promise<Result<Record<string, string>>> {
     const minerIds = Object.keys(miners);

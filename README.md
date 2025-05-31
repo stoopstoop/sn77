@@ -11,7 +11,7 @@ Query current pool weights and voting data without running a validator:
 ```bash
 # Set up environment variables
 export AUCTION_CONTRACT_ADDRESS=0x...
-export CLAIM_VOTE_CONTRACT_ADDRESS=0x...
+export SEVENTY_SEVEN_V1_CONTRACT_ADDRESS=0x...
 export RPC_URL=https://lite.chain.opentensor.ai  # optional
 
 # Run the script
@@ -21,7 +21,7 @@ bun run pools
 This script provides:
 - List of all active pools in the auction
 - Current contract weights for each pool  
-- Community voting data aggregated from ClaimVote contract
+- Community voting data aggregated from SeventySevenV1 contract
 - Auction status and configuration details
 
 The script is read-only and doesn't require any private keys or wallet setup.

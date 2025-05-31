@@ -12,7 +12,7 @@ dotenv.config({ path: path.resolve(process.cwd(), process.env.HARDHAT_NETWORK ==
 const {
   ETH_PRIVKEY,
   BT_PRIVKEY,
-  CLAIM_VOTE_CONTRACT_ADDRESS,
+  SEVENTY_SEVEN_V1_CONTRACT_ADDRESS,
   RPC_URL = 'http://127.0.0.1:9944/',
 } = process.env;
 
@@ -89,7 +89,7 @@ const validateVotes = async (
 async function main(): Promise<[void, Error | null]> {
   if (!ETH_PRIVKEY) return [undefined, new Error('ETH_PRIVKEY not found. Please add your EVM private key to .env file')];
   if (!BT_PRIVKEY) return [undefined, new Error('BT_PRIVKEY not found. Please add your Bittensor private key to .env file')];
-  if (!CLAIM_VOTE_CONTRACT_ADDRESS) return [undefined, new Error('CLAIM_VOTE_CONTRACT_ADDRESS not found. Please add the ClaimVote contract address to .env file')];
+  if (!SEVENTY_SEVEN_V1_CONTRACT_ADDRESS) return [undefined, new Error('SEVENTY_SEVEN_V1_CONTRACT_ADDRESS not found. Please add the SeventySevenV1 contract address to .env file')];
 
   const rpc_url = process.env.RPC_URL;
   const provider = new JsonRpcProvider(rpc_url);
@@ -111,8 +111,8 @@ async function main(): Promise<[void, Error | null]> {
   const evmWallet = new Wallet(ETH_PRIVKEY, provider);
   console.log(`evm address: ${await evmWallet.getAddress()}`);
 
-  const claimVoteAbi = loadAbi('ClaimVote');
-  const claimVote = new Contract(CLAIM_VOTE_CONTRACT_ADDRESS, claimVoteAbi, evmWallet);
+  const seventySevenV1Abi = loadAbi('SeventySevenV1');
+  const seventySevenV1 = new Contract(SEVENTY_SEVEN_V1_CONTRACT_ADDRESS, seventySevenV1Abi, evmWallet);
 
   const keyring = new Keyring({ type: 'ed25519' });
   const btPair = keyring.addFromUri(BT_PRIVKEY);
@@ -123,7 +123,7 @@ async function main(): Promise<[void, Error | null]> {
 
   console.log('sending vote...');
   try {
-    const tx = await claimVote.updatePositions(argv.votes, sigHex, btPubHex);
+    const tx = await seventySevenV1.updatePositions(argv.votes, sigHex, btPubHex);
     console.log(`tx: ${tx.hash}`);
     const receipt = await tx.wait();
     if (receipt?.status === 1) console.log('vote submitted');

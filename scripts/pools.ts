@@ -7,7 +7,7 @@
  * Usage: bun run pools
  * 
  * Required Environment Variables:
- * - SUBGRAPH_URL: Graph endpoint for the ClaimVote subgraph
+ * - SUBGRAPH_URL: Graph endpoint for the SeventySevenV1 subgraph
  * - TAOSTATS_API_KEY: API key for Taostats balance endpoint
  * - THEGRAPH_API_KEY: API key for The Graph network (for Uniswap V3 data)
  * 
@@ -15,7 +15,7 @@
  * - LOG=true               # Enable verbose logging from utils/poolWeights
  * 
  * The script will:
- * 1. Fetch vote positions via The Graph (ClaimVote subgraph)
+ * 1. Fetch vote positions via The Graph (SeventySevenV1 subgraph)
  * 2. Fetch token-holder balances from Taostats
  * 3. Compute normalized weights for every pool and display them
  * 4. Fetch miner liquidity positions from Uniswap V3
@@ -165,7 +165,7 @@ async function main(): Promise<void> {
   const rankedWeights = Object.entries(normalized).sort((a, b) => b[1] - a[1]);
 
   if (rankedWeights.length === 0) {
-    console.log('No pool weights found. Ensure votes exist on the ClaimVote contract and SUBGRAPH_URL is correct.');
+    console.log('No pool weights found. Ensure votes exist on the SeventySevenV1 contract and SUBGRAPH_URL is correct.');
     return;
   }
 

@@ -42,13 +42,13 @@ async function main(): Promise<[void, Error | null]> {
   await cryptoWaitReady();
   const keyring = new Keyring({ type: 'ed25519' });
 
-  let claimVoteKeypair;
+  let seventySevenV1Keypair;
   try {
     if (/^(0x)?[0-9a-fA-F]{64}$/.test(btKeyInput)) {
       dev.log('interpreting BT_PRIVKEY as hex seed');
-      claimVoteKeypair = keyring.addFromSeed(hexToU8a(btKeyInput.startsWith('0x') ? btKeyInput : '0x' + btKeyInput));
+      seventySevenV1Keypair = keyring.addFromSeed(hexToU8a(btKeyInput.startsWith('0x') ? btKeyInput : '0x' + btKeyInput));
     } else {
-      claimVoteKeypair = keyring.addFromUri(btKeyInput);
+      seventySevenV1Keypair = keyring.addFromUri(btKeyInput);
     }
   } catch (err) {
     return [undefined, err as Error];
@@ -61,16 +61,16 @@ async function main(): Promise<[void, Error | null]> {
   const sender = accounts[0];
   const signer = accounts[1];
   const ethAddress = signer.address;
-  const btPubKeyHex = ethers.hexlify(claimVoteKeypair.publicKey);
+  const btPubKeyHex = ethers.hexlify(seventySevenV1Keypair.publicKey);
 
-  const proceed = await ask(`${claimVoteKeypair.address} (Bittensor SS58)\n${btPubKeyHex} (Bittensor PubKey Hex)\n${signer.address} (Ethereum)\n proceed?`);
+  const proceed = await ask(`${seventySevenV1Keypair.address} (Bittensor SS58)\n${btPubKeyHex} (Bittensor PubKey Hex)\n${signer.address} (Ethereum)\n proceed?`);
   if (!proceed) return [undefined, null];
 
   const seventySevenV1 = await ethers.getContractAt('SeventySevenV1', seventySevenV1ContractAddress);
   const ethMsgHash = ethers.keccak256(btPubKeyHex);
   const ethSig = await signer.signMessage(ethers.getBytes(ethMsgHash));
   const edMsgHashBytes = ethers.getBytes(ethers.solidityPackedKeccak256(['address'], [signer.address]));
-  const edSig = ethers.hexlify(claimVoteKeypair.sign(edMsgHashBytes));
+  const edSig = ethers.hexlify(seventySevenV1Keypair.sign(edMsgHashBytes));
 
   try {
     const tx = await seventySevenV1.connect(sender).registerAddress(btPubKeyHex, signer.address, ethSig, edSig);

@@ -33,7 +33,7 @@ export interface Balance { address: string; balance: number; }
 const delay = (ms: number) => new Promise<void>(res => setTimeout(res, ms));
 
 /**
- * Fetch vote positions from ClaimVote subgraph.
+ * Fetch vote positions from SeventySevenV1 subgraph.
  */
 export async function fetchVotePositions(): Promise<Result<Record<string, VotePosition[]>>> {
     try {

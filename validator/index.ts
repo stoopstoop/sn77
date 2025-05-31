@@ -1404,7 +1404,7 @@ async function getMinerAddresses(miners: Record<string, string>): Promise<Result
         return [{}, null];
     }
 
-    console.log(`Fetching ETH addresses for ${minerIds.length} miners from ClaimVote subgraph...`);
+    console.log(`Fetching ETH addresses for ${minerIds.length} miners from SeventySevenV1 subgraph...`);
 
     const subgraphUrl = process.env.SUBGRAPH_URL;
     if (!subgraphUrl) {
@@ -1436,7 +1436,7 @@ async function getMinerAddresses(miners: Record<string, string>): Promise<Result
 
     // Construct the GraphQL query
     // IMPORTANT: Assumes subgraph entity is `addressRegistration` and fields are `id` (publicKey) and `ethAddress`.
-    // Adjust query based on your actual ClaimVote subgraph schema.
+    // Adjust query based on your actual SeventySevenV1 subgraph schema.
     const query = `
         query GetRegisteredAddresses($publicKeys: [Bytes!]!) {
             addressRegistrations(where: { id_in: $publicKeys }) {
