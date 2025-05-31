@@ -282,8 +282,15 @@ async function initializeBittensor(): Promise<Error | null> {
 
         const hotkeyUri = process.env.VALIDATOR_HOTKEY_URI;
         if (!hotkeyUri) return new Error('VALIDATOR_HOTKEY_URI env var not set');
+        
         const keyring = new Keyring({ type: 'sr25519' });
-        signer = keyring.addFromUri(hotkeyUri);
+        
+        try {
+            signer = keyring.addFromUri(hotkeyUri);
+        } catch (keyErr) {
+            console.error(`Failed to create signer from URI: ${keyErr}`);
+            return new Error(`Invalid VALIDATOR_HOTKEY_URI format: ${keyErr instanceof Error ? keyErr.message : String(keyErr)}`);
+        }
 
         // Verify neuron registration if storage available
         // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -293,6 +300,7 @@ async function initializeBittensor(): Promise<Error | null> {
             // @ts-ignore
             const uidCodec = await btApi.query.subtensorModule.keyToUid(NETUID, signer.address);
             const uidNum = (uidCodec as any)?.toNumber ? (uidCodec as any).toNumber() : 0;
+            console.log(`Hotkey registration check: UID ${uidNum} on netuid ${NETUID}`);
             if (uidNum === 0) return new Error('Hotkey not registered on subnet');
         }
         return null;
@@ -527,7 +535,7 @@ async function main() {
     //  PERIODIC LOOP W/ EMA LOGIC
     // ---------------------------
     const LOOP_DELAY_MS = Number(process.env.LOOP_DELAY_MS || 300000); // default 5 minutes
-    const SET_INTERVAL_MS = Number(process.env.SET_INTERVAL_MS || 72 * 60 * 1000); // 72 minutes
+    const SET_INTERVAL_MS = Number(process.env.SET_INTERVAL_MS || 101 * 12 * 1000); // 101 Blocks
     const EMA_ALPHA = Number(process.env.EMA_ALPHA || 0.2);
 
     let emaWeights: Record<string, number> = {};
@@ -629,9 +637,13 @@ async function main() {
         });
 
         if (Date.now() - lastSet >= SET_INTERVAL_MS) {
-            console.log('72-minute interval reached, pushing EMA weights on-chain');
+            userLog(`Settings weights for hotkey: ${signer?.address}`);
+            console.log('101 block interval reached, pushing EMA weights on-chain');
             const [normalizedEma, normErr] = await normalizeFinalMinerWeights(emaWeights);
             if (!normErr) {
+                const weightsDir = path.join(logDir, 'output');
+                await fs.mkdir(weightsDir, { recursive: true });
+                await fs.writeFile(path.join(weightsDir, 'latest_weights.json'), JSON.stringify(normalizedEma, null, 2));
                 const [_, setErr] = await setWeightsOnNetwork(normalizedEma);
                 if (setErr) console.error(setErr); else console.log('Weights successfully set');
             } else {
@@ -674,6 +686,7 @@ async function normalizeFinalMinerWeights(finalMinerWeights: Record<string, numb
 }
 
 async function setWeightsOnNetwork(normalizedFinalMinerWeights: Record<string, number>): Promise<Result<Record<string, number>>> {
+    if ((process.env.DEBUG_ON_SET_WEIGHTS || 'false').toLowerCase() === 'true') debugger;
     try {
         if (TEST_MODE) {
             // Write the would be weights to a timestamped JSON file for inspection
@@ -693,8 +706,19 @@ async function setWeightsOnNetwork(normalizedFinalMinerWeights: Record<string, n
 
         if (!btApi || !signer) return [{}, new Error('Bittensor API not initialized')];
 
-        const entries = Object.entries(normalizedFinalMinerWeights);
-        if (entries.length === 0) return [normalizedFinalMinerWeights, null];
+        let entries = Object.entries(normalizedFinalMinerWeights);
+
+        if (entries.length === 0) {
+            console.warn('No miner weight data found – falling back to uniform weights across all registered UIDs.');
+            const [uidsFallback, uidErr] = await fetchAllUids();
+            if (uidErr) return [{}, uidErr];
+            if (uidsFallback.length === 0) return [{}, new Error('Unable to determine UIDs for uniform weight distribution')];
+
+            const uniform = 1 / uidsFallback.length;
+            normalizedFinalMinerWeights = Object.fromEntries(uidsFallback.map(uid => [uid.toString(), uniform]));
+            entries = Object.entries(normalizedFinalMinerWeights);
+            console.log(`Applied uniform weight ${uniform.toFixed(6)} to ${uidsFallback.length} UIDs.`);
+        }
 
         const uids = entries.map(([uid]) => Number(uid));
         const floatWeights = entries.map(([_, w]) => w);
@@ -709,7 +733,10 @@ async function setWeightsOnNetwork(normalizedFinalMinerWeights: Record<string, n
 
         const header = await btApi.rpc.chain.getHeader();
         const versionKey = header.number.toNumber();
-
+        console.log('Setting weights on network...');
+        console.log('Uids:', uids);
+        console.log('Scaled:', scaled);
+        console.log('Version key:', versionKey);
         // Submit extrinsic
         // eslint-disable-next-line @typescript-eslint/ban-ts-comment
         // @ts-ignore – dynamic lookup of pallet in generated types
@@ -1566,6 +1593,23 @@ async function fetchActivePoolAddresses(poolIds: string[] = DEFAULT_TARGET_POOLS
         return [owners, null];
     } catch (e) {
         return [new Set(), e instanceof Error ? e : new Error(String(e))];
+    }
+}
+
+async function fetchAllUids(): Promise<Result<number[]>> {
+    // Returns [uids, error]. Falls back to empty list on failure.
+    try {
+        if (!btApi) return [[], new Error('Bittensor API not initialized')];
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+        // @ts-ignore – dynamic storage item lookup
+        const totalCodec = await btApi.query.subtensorModule?.subnetworkN(NETUID);
+        const total = (totalCodec as any)?.toNumber ? (totalCodec as any).toNumber() : 0;
+        if (!total || total <= 0) return [[], new Error(`Invalid subnet size returned: ${total}`)];
+        const uids = Array.from({ length: total }, (_, i) => i);
+        return [uids, null];
+    } catch (err) {
+        const error = err instanceof Error ? err : new Error(String(err));
+        return [[], error];
     }
 }
 
