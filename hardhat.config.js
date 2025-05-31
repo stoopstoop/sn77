@@ -17,6 +17,7 @@ if(!process.env.ETH_LP_KEY) {
 
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
+  defaultNetwork: "bittensorMainnet",
   solidity: {
     version: "0.8.28",
     settings: {

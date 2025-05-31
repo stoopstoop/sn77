@@ -5,8 +5,8 @@ import path from 'path';
 import readline from 'readline';
 import { Keyring } from '@polkadot/api';
 import { cryptoWaitReady } from '@polkadot/util-crypto';
-import { hexToU8a } from '@polkadot/util';
 import dotenv from 'dotenv';
+import Table from 'cli-table3';
 
 dotenv.config({ path: path.resolve(process.cwd(), process.env.HARDHAT_NETWORK === 'bittensorLocal' ? '.env.local' : '.env'), override: true });
 
@@ -40,30 +40,41 @@ async function main(): Promise<[void, Error | null]> {
   }
 
   await cryptoWaitReady();
-  const keyring = new Keyring({ type: 'ed25519' });
 
-  let seventySevenV1Keypair;
-  try {
-    if (/^(0x)?[0-9a-fA-F]{64}$/.test(btKeyInput)) {
-      dev.log('interpreting MINER_COLD_PRIVKEY as hex seed');
-      seventySevenV1Keypair = keyring.addFromSeed(hexToU8a(btKeyInput.startsWith('0x') ? btKeyInput : '0x' + btKeyInput));
-    } else {
-      seventySevenV1Keypair = keyring.addFromUri(btKeyInput);
-    }
-  } catch (err) {
-    return [undefined, err as Error];
-  }
+  // derive both sr25519 (matches btcli) and ed25519 (needed for EVM precompile) from the same seed
 
-  console.log('starting registration...');
+  const srKeyring = new Keyring({ type: 'sr25519', ss58Format: 42 });
+  const srPair = srKeyring.addFromUri(btKeyInput);   // btcli address
+  
+  const edKeyring = new Keyring({ type: 'ed25519', ss58Format: 42 });
+  const edPair = edKeyring.addFromUri(btKeyInput);   // used for signing
+
+  let seventySevenV1Keypair = edPair; // use ed25519 for signature generation
+
+  console.log('You are about to link the following wallets together:');
 
   const accounts = await ethers.getSigners();
-  console.log(accounts);
   const sender = accounts[0];
   const signer = accounts[1];
-  const ethAddress = signer.address;
   const btPubKeyHex = ethers.hexlify(seventySevenV1Keypair.publicKey);
+  
+  // Get Ethereum public key by signing a test message and recovering it
+  const testMsg = 'test';
+  const testSig = await signer.signMessage(testMsg);
+  const ethPubKey = ethers.SigningKey.recoverPublicKey(ethers.hashMessage(testMsg), testSig);
 
-  const proceed = await ask(`${seventySevenV1Keypair.address} (Bittensor SS58)\n${btPubKeyHex} (Bittensor PubKey Hex)\n${signer.address} (Ethereum)\n proceed?`);
+  const truncate = (s: string, lead = 6, tail = 4): string => s.length <= lead + tail + 3 ? s : `${s.slice(0, lead)}...${s.slice(-tail)}`;
+
+  const table = new Table({ colWidths: [22, 30], wordWrap: true });
+  table.push(
+    ['Miner Cold Key', 'Ethereum Address'],
+    // ['Bittensor PubKey Hex', truncate(btPubKeyHex)],
+    [truncate(srPair.address, 10, 4), truncate(signer.address, 10, 4)],
+    // ['Ethereum PubKey', truncate(ethPubKey)]
+  );
+  console.log(`\n${table.toString()}\n`);
+
+  const proceed = await ask('Proceed with registration?');
   if (!proceed) return [undefined, null];
 
   const seventySevenV1 = await ethers.getContractAt('SeventySevenV1', seventySevenV1ContractAddress);
