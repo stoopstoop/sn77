@@ -42,7 +42,7 @@ bun run pools
 
 ## Scripts cheat-sheet
 
-| Script | Purpose | Typical command |
+| Script | Purpose | Usage |
 |--------|---------|-----------------|
 | `create-key.ts` | Generate or import an **EVM keypair** and derive the corresponding **SS58** address. Stores everything in `.keys/` and can update `.env`. | `bunx tsx scripts/create-key.ts` |
 | `register.ts` | Link a **Bittensor public-key** → **EVM address** on-chain via `registerAddress`. Requires the `BT_PRIVKEY` that owns the public key *and* two funded EVM signers. | `bunx tsx scripts/register.ts` |
@@ -62,7 +62,7 @@ Validators read on-chain votes, normalise them by token-holder balance, mix-in U
 
 • Bun
 • Docker (only needed for the local Graph Node)  
-• A registered **validator hotkey** with stake on subnet 77 (Validators Only)
+• A registered **validator hotkey** with stake on subnet 77
 • Funds (≈ 0.02 TAO) on the associated **EVM address** for gas  
 • Environment variables (see next section)  
 
@@ -119,7 +119,7 @@ BT_PRIVKEY=                                             # Ed25519 cold-key seed 
 ETH_PRIVKEY=                                            # EVM key with TAO for gas
 
 # Contracts
-SEVENTY_SEVEN_V1_CONTRACT_ADDRESS=0x...                 # ClaimVote / SeventySevenV1
+SEVENTY_SEVEN_V1_CONTRACT_ADDRESS=0x...                 # SeventySevenV1
 AUCTION_CONTRACT_ADDRESS=0x...
 
 # Indexing / Analytics
@@ -134,21 +134,6 @@ HARDHAT_NETWORK=bittensorLocal                          # optional
 ```
 
 *Everything else has sensible defaults or is only required for specific tasks.*
-
----
-
-## Developer workflow
-
-```
-# test contracts
-bun test
-
-# deploy to a fork
-bunx hardhat deploy --network bittensorLocal
-
-# lint & type-check
-bun run lint && bun run typecheck
-```
 
 ---
 
