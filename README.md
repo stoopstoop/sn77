@@ -45,7 +45,7 @@ bun run pools
 | Script | Purpose | Usage |
 |--------|---------|-----------------|
 | `create-key.ts` | Generate or import an **EVM keypair** and derive the corresponding **SS58** address. Stores everything in `.keys/` and can update `.env`. | `bunx tsx scripts/create-key.ts` |
-| `register.ts` | Link a **Bittensor public-key** → **EVM address** on-chain via `registerAddress`. Requires the `BT_PRIVKEY` that owns the public key *and* two funded EVM signers. | `bunx tsx scripts/register.ts` |
+| `register.ts` | Link a **Bittensor public-key** → **EVM address** on-chain via `registerAddress`. Requires the `MINER_COLD_PRIVKEY` that owns the public key. | `bunx tsx scripts/register.ts` |
 | `vote.ts` | Submit pool-weight votes. Accepts a string such as `0xPOOL_A,6000;0xPOOL_B,4000` that must sum to `10000`. | `bunx tsx scripts/vote.ts --votes 0x..,7000;0x..,3000` |
 | `pools.ts` | Offline analytics: combines on-chain votes, Taostats balances, and Uniswap-V3 liquidity to print a ranked weight table. | `bun run pools` |
 | `balance.ts` | Display EVM balances for every key inside `.keys/`. | `NETWORK=mainnet bunx tsx scripts/balance.ts` |
@@ -115,7 +115,7 @@ BITTENSOR_WS_URL=wss://entrypoint-finney.opentensor.ai:443  # or your own
 VALIDATOR_HOTKEY_URI="//Alice"                               # sr25519 URI
 
 # Keys
-BT_PRIVKEY=                                             # Ed25519 cold-key seed for voting
+MINER_COLD_PRIVKEY=                                     # Ed25519 cold-key seed for voting
 ETH_PRIVKEY=                                            # EVM key with TAO for gas
 
 # Contracts
@@ -134,6 +134,12 @@ HARDHAT_NETWORK=bittensorLocal                          # optional
 ```
 
 *Everything else has sensible defaults or is only required for specific tasks.*
+
+### Obtaining required API keys
+
+• **Taostats**: You can retrieve your taostats api key here https://dash.taostats.io/api-keys
+
+• **The Graph**: Log in to [Subgraph Studio](https://thegraph.com/studio/apikeys/) → **API Keys** in the sidebar → *Create API Key* → copy the generated token. See the official guide for details ([docs](https://thegraph.com/docs/en/subgraphs/querying/managing-api-keys/)).
 
 ---
 

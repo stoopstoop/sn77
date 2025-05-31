@@ -34,9 +34,9 @@ const dev = {
 
 async function main(): Promise<[void, Error | null]> {
   console.clear();
-  const btKeyInput = process.env.BT_PRIVKEY ?? '';
+  const btKeyInput = process.env.MINER_COLD_PRIVKEY ?? '';
   if (!btKeyInput && process.env.NODE_ENV !== 'development') {
-    return [undefined, new Error('BT_PRIVKEY not set')];
+    return [undefined, new Error('MINER_COLD_PRIVKEY not set')];
   }
 
   await cryptoWaitReady();
@@ -45,7 +45,7 @@ async function main(): Promise<[void, Error | null]> {
   let seventySevenV1Keypair;
   try {
     if (/^(0x)?[0-9a-fA-F]{64}$/.test(btKeyInput)) {
-      dev.log('interpreting BT_PRIVKEY as hex seed');
+      dev.log('interpreting MINER_COLD_PRIVKEY as hex seed');
       seventySevenV1Keypair = keyring.addFromSeed(hexToU8a(btKeyInput.startsWith('0x') ? btKeyInput : '0x' + btKeyInput));
     } else {
       seventySevenV1Keypair = keyring.addFromUri(btKeyInput);
