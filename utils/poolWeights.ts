@@ -82,69 +82,42 @@ export async function fetchVotePositions(): Promise<Result<Record<string, VotePo
 }
 
 /**
- * Fetch balances for addresses from Taostats API.
+ * Fetch balances for addresses from votes server's /allHolders endpoint.
  */
 export async function fetchBalances(votePositions: Record<string, VotePosition[]>): Promise<Result<Record<string, Balance>>> {
     const addresses = Object.keys(votePositions);
     if (!addresses.length) return [{}, null];
 
-    const apiKey = process.env.TAOSTATS_API_KEY;
-    if (!apiKey) return [{}, new Error('TAOSTATS_API_KEY not configured')];
+    try {
+        const votesServerUrl = process.env.VOTES_SERVER_URL || 'http://localhost:3000';
 
-    const baseUrl = 'https://api.taostats.io/api/dtao/stake_balance/latest/v1';
-    const limit = 200;
-    let offset = 0, page = 1, totalPages = 1;
-    const all: any[] = [];
-    const initDelay = 1000, proactiveDelay = 1000, maxBackoff = 60000;
-
-    while (page <= totalPages) {
-        let done = false, backoff = initDelay;
-        while (!done) {
-            if (page > 1 || backoff > initDelay) await delay(proactiveDelay);
-
-            const url = `${baseUrl}?netuid=77&limit=${limit}&offset=${offset}&order=balance_desc`;
-            let resp: Response | undefined; let text = '';
-            try {
-                resp = await fetch(url, { headers: { accept: 'application/json', authorization: apiKey } });
-                text = await resp.text();
-            } catch (e) { resp = undefined; text = String(e); }
-
-            if (resp?.ok) {
-                try {
-                    const j = JSON.parse(text);
-                    totalPages = j.pagination.total_pages;
-                    all.push(...j.data);
-                    done = true;
-                } catch { return [{}, new Error('Failed to parse Taostats response')]; }
-                continue;
+        const resp = await fetch(`${votesServerUrl}/allHolders`);
+        const txt = await resp.text();
+        if (!resp.ok) return [{}, new Error(`Holders server request failed (${resp.status}): ${txt}`)];
+        
+        const js = JSON.parse(txt);
+        if (!js.success) return [{}, new Error(`Holders server error: ${js.error || 'Unknown error'}`)];
+        
+        const holders = js.holders || [];
+        const mapAll = new Map<string, number>();
+        
+        for (const holder of holders) {
+            if (!holder.address || !holder.alphaBalanceRaw) continue;
+            
+            const rawBalance = parseFloat(holder.alphaBalanceRaw);
+            if (!isNaN(rawBalance)) {
+                const alphaTokens = rawBalance / 1e9;
+                mapAll.set(holder.address, alphaTokens);
             }
-
-            if (resp?.status === 429) {
-                await delay(backoff);
-                backoff = Math.min(backoff * 2, maxBackoff);
-                continue;
-            }
-
-            return [{}, new Error(`Taostats request failed: ${resp?.status} ${text}`)];
         }
-        page++; offset += limit;
+
+        const relevant: Record<string, Balance> = {};
+        for (const a of addresses) relevant[a] = { address: a, balance: mapAll.get(a) ?? 0 };
+
+        return [relevant, null];
+    } catch (err) {
+        return [{}, err instanceof Error ? err : new Error(String(err))];
     }
-
-    const mapAll = new Map<string, number>();
-    for (const item of all) {
-        if (!item.coldkey?.ss58) continue;
-        // Convert raw integer balance to alpha tokens by dividing by 1e9
-        const rawBalance = parseFloat(item.balance_as_tao);
-        if (!isNaN(rawBalance)) {
-            const alphaTokens = rawBalance / 1e9;
-            mapAll.set(item.coldkey.ss58, alphaTokens);
-        }
-    }
-
-    const relevant: Record<string, Balance> = {};
-    for (const a of addresses) relevant[a] = { address: a, balance: mapAll.get(a) ?? 0 };
-
-    return [relevant, null];
 }
 
 /**

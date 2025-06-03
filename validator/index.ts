@@ -29,7 +29,7 @@ import { ApiPromise, WsProvider } from '@polkadot/api';
 import { Keyring } from '@polkadot/keyring';
 import type { ISubmittableResult } from '@polkadot/types/types';
 import { computePoolWeights } from '../utils/poolWeights';
-import { getMiners as getMinersUtil, getMinerAddresses as getMinerAddressesUtil, getMinerLiquidityPositions as getMinerLiquidityPositionsUtil, fetchActivePoolAddresses as fetchActivePoolAddressesUtil } from '../utils/miners';
+import { getMiners as getMinersUtil, getMinerAddresses as getMinerAddressesUtil, getMinerLiquidityPositions as getMinerLiquidityPositionsUtil } from '../utils/miners';
 
 // ----------------------
 //  Logging Configuration
@@ -310,14 +310,6 @@ async function main() {
         const [minerAddresses, addrErr] = await getMinerAddressesUtil(miners);
         if (addrErr) { console.error(addrErr); await waitRemaining(startTime); continue; }
         userLog(`Fetched miner addresses: ${Object.keys(minerAddresses).length}`);
-
-        // Fetch active liquidity providers for target pools (informational)
-        const [activeOwners, activeErr] = await fetchActivePoolAddressesUtil();
-        if (activeErr) {
-            console.error(activeErr);
-        } else {
-            userLog(`Active pool addresses fetched: ${activeOwners.size}`);
-        }
 
         const [minerLiquidityPositions, liqErr] = await getMinerLiquidityPositionsUtil(minerAddresses);
         if (liqErr) { console.error(liqErr); await waitRemaining(startTime); continue; }
