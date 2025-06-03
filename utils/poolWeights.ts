@@ -68,13 +68,7 @@ export async function fetchVotePositions(): Promise<Result<Record<string, VotePo
                 map[ss58].push({ poolAddress, weight: pool.weight });
             }
         }
-
-        // write map to file in ./.data/votes.json
-        const dataDir = path.join(__dirname, '..', '.data');
-        if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir);
-        fs.writeFileSync(path.join(dataDir, 'votes.json'), JSON.stringify(map, null, 2));
-        console.log('votes.json written to', path.join(dataDir, 'votes.json'));
-        
+   
         return [map, null];
     } catch (err) {
         return [{}, err instanceof Error ? err : new Error(String(err))];
