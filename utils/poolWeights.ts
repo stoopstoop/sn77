@@ -1,6 +1,8 @@
 import { encodeAddress } from '@polkadot/util-crypto';
 import { getAddress } from 'ethers';
 import dotenv from 'dotenv';    
+import fs from 'fs';
+import path from 'path';
 
 const NO_ENV = process.env.NO_ENV === 'true';
 
@@ -33,46 +35,46 @@ export interface Balance { address: string; balance: number; }
 const delay = (ms: number) => new Promise<void>(res => setTimeout(res, ms));
 
 /**
- * Fetch vote positions from SeventySevenV1 subgraph.
+ * Fetch vote positions from centralized votes server.
  */
 export async function fetchVotePositions(): Promise<Result<Record<string, VotePosition[]>>> {
     try {
-        const subgraphUrl = process.env.SUBGRAPH_URL;
-        if (!subgraphUrl) return [{}, new Error('SUBGRAPH_URL not configured')];
+        const votesServerUrl = process.env.VOTES_SERVER_URL || 'http://localhost:3000';
+        if (!votesServerUrl) return [{}, new Error('VOTES_SERVER_URL not configured')];
 
-        const PAGE_SIZE = 1000;
-        let skip = 0;
-        const all: any[] = [];
-
-        while (true) {
-            const query = `query{positions(first:${PAGE_SIZE},skip:${skip},orderBy:id,orderDirection:asc,subgraphError:deny){id publicKey poolAddress weight timestamp}}`;
-            const resp = await fetch(subgraphUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ query })
-            });
-            const txt = await resp.text();
-            if (!resp.ok) return [{}, new Error(`Graph query failed (${resp.status}): ${txt}`)];
-            const js = JSON.parse(txt);
-            if (js.errors) return [{}, new Error(`Graph query errors: ${JSON.stringify(js.errors)}`)];
-            const batch = js.data?.positions ?? [];
-            all.push(...batch);
-            if (batch.length < PAGE_SIZE) break;
-            skip += PAGE_SIZE;
-        }
-
+        const resp = await fetch(`${votesServerUrl}/allVotes`);
+        const txt = await resp.text();
+        if (!resp.ok) return [{}, new Error(`Votes server request failed (${resp.status}): ${txt}`)];
+        
+        const js = JSON.parse(txt);
+        if (!js.success) return [{}, new Error(`Votes server error: ${js.error || 'Unknown error'}`)];
+        
+        const votes = js.votes || [];
         const map: Record<string, VotePosition[]> = {};
-        for (const p of all) {
-            if (!p.publicKey) continue;
-            let ss58: string;
-            try { ss58 = encodeAddress(p.publicKey, 42); } catch { continue; }
+        
+        for (const vote of votes) {
+            if (!vote.ss58Address || !vote.pools) continue;
+            
+            const ss58 = vote.ss58Address;
             if (!map[ss58]) map[ss58] = [];
-            const w = Number(p.weight);
-            if (isNaN(w)) continue;
-            let pool: string;
-            try { pool = getAddress(p.poolAddress); } catch { continue; }
-            map[ss58].push({ poolAddress: pool, weight: w });
+            
+            for (const pool of vote.pools) {
+                if (!pool.address || typeof pool.weight !== 'number') continue;
+                if (!isFinite(pool.weight) || pool.weight <= 0) continue;
+                
+                let poolAddress: string;
+                try { poolAddress = getAddress(pool.address); } catch { continue; }
+                
+                map[ss58].push({ poolAddress, weight: pool.weight });
+            }
         }
+
+        // write map to file in ./.data/votes.json
+        const dataDir = path.join(__dirname, '..', '.data');
+        if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir);
+        fs.writeFileSync(path.join(dataDir, 'votes.json'), JSON.stringify(map, null, 2));
+        console.log('votes.json written to', path.join(dataDir, 'votes.json'));
+        
         return [map, null];
     } catch (err) {
         return [{}, err instanceof Error ? err : new Error(String(err))];
@@ -131,8 +133,12 @@ export async function fetchBalances(votePositions: Record<string, VotePosition[]
     const mapAll = new Map<string, number>();
     for (const item of all) {
         if (!item.coldkey?.ss58) continue;
-        const bal = parseFloat(item.balance_as_tao);
-        if (!isNaN(bal)) mapAll.set(item.coldkey.ss58, bal);
+        // Convert raw integer balance to alpha tokens by dividing by 1e9
+        const rawBalance = parseFloat(item.balance_as_tao);
+        if (!isNaN(rawBalance)) {
+            const alphaTokens = rawBalance / 1e9;
+            mapAll.set(item.coldkey.ss58, alphaTokens);
+        }
     }
 
     const relevant: Record<string, Balance> = {};
