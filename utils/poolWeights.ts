@@ -65,7 +65,7 @@ export async function fetchVotePositions(): Promise<Result<Record<string, VotePo
         for (const p of all) {
             if (!p.publicKey) continue;
             let ss58: string;
-            try { ss58 = encodeAddress(p.publicKey); } catch { continue; }
+            try { ss58 = encodeAddress(p.publicKey, 42); } catch { continue; }
             if (!map[ss58]) map[ss58] = [];
             const w = Number(p.weight);
             if (isNaN(w)) continue;
@@ -184,8 +184,10 @@ export function calculatePoolWeights(
  */
 export async function computePoolWeights(): Promise<[[Record<string, number>, Record<string, number>], Error | null]> {
     const [positions, posErr] = await fetchVotePositions();
+    console.log('positions:', positions);
     if (posErr) return [[{}, {}], posErr];
     const [balances, balErr] = await fetchBalances(positions);
+    console.log('balances:', balances);
     if (balErr) return [[{}, {}], balErr];
     return [calculatePoolWeights(positions, balances), null];
 } 
