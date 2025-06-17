@@ -181,35 +181,3 @@ export async function getMinerLiquidityPositions(minerAddresses: Record<string, 
     for (const uid of Object.keys(minerAddresses)) if (!out[uid]) out[uid] = [];
     return [out, null];
 }
-
-/** Fetch unique owner addresses that currently have liquidity in the given pools. */
-export async function fetchActivePoolAddresses(poolIds: string[] = DEFAULT_POOLS): Promise<Result<Set<string>>> {
-    const apiKey = process.env.THEGRAPH_API_KEY;
-    if (!apiKey) return [new Set(), new Error('THEGRAPH_API_KEY not configured')];
-    const subgraphId = '5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV';
-    const url = `https://gateway.thegraph.com/api/subgraphs/id/${subgraphId}`;
-
-    const owners = new Set<string>();
-    const pageSize = 1000;
-
-    for (const poolId of poolIds) {
-        let skip = 0;
-        while (true) {
-            const query = `query($poolId:String!,$first:Int!,$skip:Int!){positions(where:{liquidity_gt:"1",pool_:{id:$poolId}},first:$first,skip:$skip){owner}}`;
-            const res = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-                body: JSON.stringify({ query, variables: { poolId: poolId.toLowerCase(), first: pageSize, skip } })
-            });
-            const txt = await res.text();
-            if (!res.ok) break;
-            const json = JSON.parse(txt);
-            if (json.errors) break;
-            const pos = json.data?.positions ?? [];
-            pos.forEach((p: { owner: string }) => owners.add(p.owner.toLowerCase()));
-            if (pos.length < pageSize) break;
-            skip += pageSize;
-        }
-    }
-    return [owners, null];
-} 
