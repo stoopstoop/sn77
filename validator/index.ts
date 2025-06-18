@@ -30,6 +30,7 @@ import { Keyring } from '@polkadot/keyring';
 import type { ISubmittableResult } from '@polkadot/types/types';
 import { computePoolWeights } from '../utils/poolWeights';
 import { getMiners as getMinersUtil, getMinerAddresses as getMinerAddressesUtil, getMinerLiquidityPositions as getMinerLiquidityPositionsUtil } from '../utils/miners';
+import { GraphQLClient } from 'graphql-request';
 
 // ----------------------
 //  Logging Configuration
@@ -99,8 +100,16 @@ function userLog(...args: any[]): void {
 dotenv.config();
 
 // Toggle test mode via env var; when true, weights are not pushed on-chain
-const TEST_MODE = (process.env.TEST_MODE || 'false').toLowerCase() === 'true';
-if (TEST_MODE) console.log('Running in TEST_MODE: on-chain setWeights will be skipped.');
+// Default to true unless explicitly set to false
+const TEST_MODE = (process.env.TEST_MODE || 'true').toLowerCase() === 'true';
+if (TEST_MODE) {
+    console.log('Running in TEST_MODE: weights will be saved to JSON files instead of being pushed on-chain');
+    // Ensure weights directory exists
+    const weightsDir = path.join(logDir, 'weights');
+    fs.mkdir(weightsDir, { recursive: true }).catch(err => {
+        console.error('Failed to create weights directory:', err);
+    });
+}
 
 interface LiquidityPosition {
     id: string;
@@ -143,6 +152,23 @@ interface PositionScore {
     pairKey: string;
 }
 
+interface Vote {
+  ss58Address: string;
+  pools: Array<{ address: string; weight: number }>;
+  total_weight: number;
+  block_number: number;
+  alphaBalance: number;
+  weightMultiplier: number;
+}
+
+interface VotesResponse {
+  success: boolean;
+  votes: Vote[];
+  totalAlphaTokens: number;
+  cached: boolean;
+  error?: string;
+}
+
 // Type alias for the standard return pattern [value, error]
 type Result<T> = [T, Error | null];
 
@@ -165,6 +191,102 @@ const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const NETUID = Number(process.env.NETUID || 77);
 let btApi: ApiPromise | null = null;
 let signer: ReturnType<Keyring['addFromUri']> | null = null;
+
+// Cache for votes data
+interface CachedVotes {
+  data: VotesResponse;
+  timestamp: number;
+}
+
+let cachedVotes: CachedVotes | null = null;
+const CACHE_DURATION_MS = 5 * 60 * 1000; // 5 minutes in milliseconds
+
+// Constants for Uniswap V3 subgraph
+const UNISWAP_V3_SUBGRAPH_URL = 'https://gateway.thegraph.com/api/subgraphs/id/5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV';
+const UNISWAP_V3_CLIENT = new GraphQLClient(UNISWAP_V3_SUBGRAPH_URL, {
+  headers: {
+    'Authorization': `Bearer ${process.env.THEGRAPH_API_KEY || ''}`
+  }
+});
+
+// Query to get positions for a specific owner
+const POSITIONS_QUERY = `
+  query GetPositions($owner: String!, $poolIds: [String!]!) {
+    positions(where: { owner: $owner, pool_in: $poolIds }) {
+      id
+      owner
+      pool {
+        id
+        feeTier
+        token0 {
+          id
+          symbol
+          decimals
+          name
+        }
+        token1 {
+          id
+          symbol
+          decimals
+          name
+        }
+        tick
+      }
+      tickLower {
+        id
+        tickIdx
+      }
+      tickUpper {
+        id
+        tickIdx
+      }
+      liquidity
+    }
+  }
+`;
+
+interface UniswapPosition {
+  id: string;
+  owner: string;
+  pool: {
+    id: string;
+    feeTier: string;
+    token0: {
+      id: string;
+      symbol: string;
+      decimals: string;
+      name: string;
+    };
+    token1: {
+      id: string;
+      symbol: string;
+      decimals: string;
+      name: string;
+    };
+    tick: string;
+  };
+  tickLower: {
+    id: string;
+    tickIdx: string;
+  };
+  tickUpper: {
+    id: string;
+    tickIdx: string;
+  };
+  liquidity: string;
+}
+
+interface UniswapResponse {
+  positions: UniswapPosition[];
+}
+
+interface RegistryMapResponse {
+  success: boolean;
+  miners: Array<{ hotkeyAddress: string, ethereumAddress: string | null }>;
+  totalMiners: number;
+  linkedMiners: number;
+  error?: string;
+}
 
 async function initializeBittensor(): Promise<Error | null> {
     async function attemptReconnect(wsUrl: string): Promise<void> {
@@ -233,10 +355,13 @@ async function initializeBittensor(): Promise<Error | null> {
     }
 }
 
-async function main() {
-
+async function main(): Promise<void> {
     const bittensorErr = await initializeBittensor();
-    if (bittensorErr) return [null, new Error(`Failed to initialize Bittensor: ${bittensorErr.message}`)];
+    if (bittensorErr) {
+        console.error('Failed to initialize Bittensor:', bittensorErr);
+        process.exit(1);
+        return;
+    }
 
     // ---------------------------
     //  PERIODIC LOOP W/ EMA LOGIC
@@ -244,10 +369,15 @@ async function main() {
     const LOOP_DELAY_MS = Number(process.env.LOOP_DELAY_MS || 300000); // default 5 minutes
     const SET_INTERVAL_MS = Number(process.env.SET_INTERVAL_MS || 101 * 12 * 1000); // 101 Blocks
     const EMA_ALPHA = Number(process.env.EMA_ALPHA || 0.2);
+    const MAX_CONSECUTIVE_ERRORS = 5;
 
     let emaWeights: Record<string, number> = {};
-    let lastSet = Date.now();
+    let lastSet = 0;
     let iteration = 0;
+    let consecutiveErrors = 0;
+
+    // Note: We determine the list of valid UIDs from the registry map data rather than fetchAllUids()
+    // to ensure consistency between the UIDs we process and the miners data available from the API
 
     const updateEma = (prev: Record<string, number>, curr: Record<string, number>): Record<string, number> => {
         const keys = new Set([...Object.keys(prev), ...Object.keys(curr)]);
@@ -293,66 +423,287 @@ async function main() {
     };
 
     while (true) {
-        iteration++;
-        userLog(`Iteration ${iteration} started`);
+        try {
+            const startTime = Date.now();
+            userLog(`\nIteration ${++iteration} starting...`);
 
-        const startTime = Date.now();
-
-        const [poolWeightTuple, poolErr] = await computePoolWeights();
-        if (poolErr) { console.error(poolErr); await waitRemaining(startTime); continue; }
-        const [poolWeights] = poolWeightTuple; // normalized weights from shared logic
-        userLog(`Calculated pool weights (shared logic): ${Object.keys(poolWeights).length} pools`);
-
-        const [miners, minersErr] = await getMinersUtil();
-        if (minersErr) { console.error(minersErr); await waitRemaining(startTime); continue; }
-        userLog(`Fetched miners: ${Object.keys(miners).length}`);
-
-        const [minerAddresses, addrErr] = await getMinerAddressesUtil(miners);
-        if (addrErr) { console.error(addrErr); await waitRemaining(startTime); continue; }
-        userLog(`Fetched miner addresses: ${Object.keys(minerAddresses).length}`);
-
-        const [minerLiquidityPositions, liqErr] = await getMinerLiquidityPositionsUtil(minerAddresses);
-        if (liqErr) { console.error(liqErr); await waitRemaining(startTime); continue; }
-        userLog("Fetched miner liquidity positions");
-
-        const [normalizedPositionScores, normPosErr] = await calculateAndNormalizePoolScores(minerLiquidityPositions);
-        if (normPosErr) { console.error(normPosErr); await waitRemaining(startTime); continue; }
-        userLog("Calculated normalized position scores");
-
-        const [finalMinerWeights, finalWeightsErr] = await calculateFinalMinerWeights(minerLiquidityPositions, normalizedPositionScores, poolWeights);
-        if (finalWeightsErr) { console.error(finalWeightsErr); await waitRemaining(startTime); continue; }
-        userLog("Calculated final miner weights");
-
-        emaWeights = updateEma(emaWeights, finalMinerWeights);
-        userLog('Updated EMA weights');
-
-        const [displayEmaWeights] = await normalizeFinalMinerWeights(emaWeights);
-        const top = Object.entries(displayEmaWeights).sort((a, b) => b[1] - a[1]).slice(0, 10);
-        importantLog(`--- Loop ${iteration} Top EMA Weights ---`);
-        top.forEach(([uid, weight], idx) => {
-            const ck = miners[uid] ?? 'N/A';
-            const shortCk = ck === 'N/A' ? ck : `${ck.slice(0, 4)}...${ck.slice(-4)}`;
-            importantLog(`${idx + 1}. UID ${uid} => ${weight.toFixed(6)} (${shortCk})`);
-        });
-
-        if (Date.now() - lastSet >= SET_INTERVAL_MS) {
-            userLog(`Settings weights for hotkey: ${signer?.address}`);
-            console.log('101 block interval reached, pushing EMA weights on-chain');
-            const [normalizedEma, normErr] = await normalizeFinalMinerWeights(emaWeights);
-            if (!normErr) {
-                const weightsDir = path.join(logDir, 'output');
-                await fs.mkdir(weightsDir, { recursive: true });
-                await fs.writeFile(path.join(weightsDir, 'latest_weights.json'), JSON.stringify(normalizedEma, null, 2));
-                const [_, setErr] = await setWeightsOnNetwork(normalizedEma);
-                if (setErr) console.error(setErr); else console.log('Weights successfully set');
-            } else {
-                console.error(normErr);
+            // Fetch votes from central server
+            const [votesData, votesErr] = await fetchVotesFromServer();
+            if (votesErr) {
+                console.error('Error fetching votes:', votesErr);
+                consecutiveErrors++;
+                if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                    console.error(`Too many consecutive errors (${consecutiveErrors}), exiting...`);
+                    process.exit(1);
+                    return;
+                }
+                await waitRemaining(startTime);
+                continue;
             }
-            lastSet = Date.now();
-        }
 
-        userLog(`Iteration ${iteration} completed in ${((Date.now()-startTime)/1000).toFixed(1)}s`);
-        await waitRemaining(startTime);
+            if (!votesData) {
+                console.error('No votes data received');
+                consecutiveErrors++;
+                if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                    console.error(`Too many consecutive errors (${consecutiveErrors}), exiting...`);
+                    process.exit(1);
+                    return;
+                }
+                await waitRemaining(startTime);
+                continue;
+            }
+
+            // Debug log the votes data structure
+            console.log('DEBUG: Votes data structure:', JSON.stringify(votesData, null, 2));
+
+            // Reset error counter on successful iteration
+            consecutiveErrors = 0;
+
+            // Log vote information
+            userLog(`Total Alpha Tokens: ${votesData.totalAlphaTokens}`);
+            userLog(`Number of voters: ${Array.isArray(votesData.votes) ? votesData.votes.length : 'invalid'}`);
+            userLog(`Cache status: ${votesData.cached ? 'Using cached data' : 'Fresh data'}`);
+
+            // Process votes and calculate pool weights
+            const poolWeights: Record<string, number> = {};
+            const votedPoolIds = new Set<string>();
+
+            votesData.votes.forEach(vote => {
+                vote.pools.forEach(pool => {
+                    const poolAddress = getAddress(pool.address);
+                    const weightedVote = pool.weight * vote.weightMultiplier;
+                    poolWeights[poolAddress] = (poolWeights[poolAddress] || 0) + weightedVote;
+                    votedPoolIds.add(poolAddress.toLowerCase());
+                });
+            });
+
+            if (Object.keys(poolWeights).length === 0) {
+                console.error('No pool weights calculated from votes');
+                await waitRemaining(startTime);
+                continue;
+            }
+
+            userLog(`Pool weights calculated from ${votesData.votes.length} votes`);
+            userLog(`Number of unique pools voted for: ${votedPoolIds.size}`);
+
+            // Fetch registry map (includes miners and their ethereum addresses)
+            const [registryMap, registryErr] = await fetchRegistryMap();
+            if (registryErr) {
+                console.error('Error fetching registry map:', registryErr);
+                await waitRemaining(startTime);
+                continue;
+            }
+
+            if (!registryMap || !registryMap.miners) {
+                console.error('No registry map data received');
+                await waitRemaining(startTime);
+                continue;
+            }
+
+            if (registryMap.miners.length === 0) {
+                console.error('Registry map contains no miners');
+                await waitRemaining(startTime);
+                continue;
+            }
+
+            // Create mappings from registry data
+            const uidToHotkey: Record<string, string> = {};
+            const hotkeyToEth: Record<string, string> = {};
+            const ethereumAddresses: string[] = [];
+            const validUIDs: number[] = []; // Track UIDs that exist in registry map
+
+            console.log('DEBUG: First few miners from registry map:', registryMap.miners.slice(0, 3));
+            for (let i = 0; i < registryMap.miners.length; i++) {
+                const entry = registryMap.miners[i];
+                uidToHotkey[i.toString()] = entry.hotkeyAddress;
+                validUIDs.push(i); // Add UID to valid list
+                
+                if (entry.ethereumAddress) {
+                    hotkeyToEth[entry.hotkeyAddress] = entry.ethereumAddress.toLowerCase();
+                    ethereumAddresses.push(entry.ethereumAddress.toLowerCase());
+                }
+            }
+
+            userLog(`Registry map contains ${registryMap.miners.length} miners, using UIDs 0-${registryMap.miners.length - 1}`);
+            userLog(`Found ${ethereumAddresses.length} linked Ethereum addresses`);
+
+            // Fetch liquidity positions for voted pools
+            const [liquidityPositions, liqErr] = await fetchLiquidityPositions(
+                ethereumAddresses,
+                Array.from(votedPoolIds)
+            );
+
+            if (liqErr) {
+                console.error('Error fetching liquidity positions:', liqErr);
+                await waitRemaining(startTime);
+                continue;
+            }
+
+            // Log liquidity position information
+            const minersWithLiquidity = Object.entries(liquidityPositions)
+                .filter(([_, positions]) => positions.length > 0);
+            
+            userLog(`Found ${minersWithLiquidity.length} miners with liquidity positions in voted pools`);
+            minersWithLiquidity.forEach(([address, positions]) => {
+                userLog(`Address ${address} has ${positions.length} liquidity positions`);
+            });
+
+            if (minersWithLiquidity.length === 0) {
+                console.error('No miners have liquidity positions in voted pools');
+                await waitRemaining(startTime);
+                continue;
+            }
+
+            // Normalize pool weights
+            const totalWeight = Object.values(poolWeights).reduce((sum, weight) => sum + weight, 0);
+            if (totalWeight === 0) {
+                console.error('Total pool weight is zero, skipping weight update');
+                await waitRemaining(startTime);
+                continue;
+            }
+
+            Object.keys(poolWeights).forEach(pool => {
+                poolWeights[pool] = (poolWeights[pool] / totalWeight) * 10000;
+            });
+
+            // Build uid -> positions map using only valid UIDs from registry map
+            const uidPositions: Record<string, LiquidityPosition[]> = {};
+            for (const uid of validUIDs) {
+                const uidStr = uid.toString();
+                const hotkey = uidToHotkey[uidStr];
+                if (!hotkey) {
+                    console.error(`DEBUG: UID ${uidStr} has no hotkey mapping - this should not happen`);
+                    uidPositions[uidStr] = [];
+                    continue;
+                }
+                const ethAddress = hotkeyToEth[hotkey];
+                const positions = ethAddress ? (liquidityPositions[ethAddress] || []) : [];
+                if (!ethAddress) console.log(`DEBUG: UID ${uidStr} (hotkey ${hotkey}) has no Ethereum address mapping`);
+                if (!positions.length) console.log(`DEBUG: UID ${uidStr} has no liquidity positions in voted pools`);
+                uidPositions[uidStr] = positions;
+            }
+
+            // Calculate position scores and final miner weights (by uid)
+            const [normalizedPositionScores, normPosErr] = await calculateAndNormalizePoolScores(uidPositions);
+            if (normPosErr) {
+                console.error('Error calculating position scores:', normPosErr);
+                await waitRemaining(startTime);
+                continue;
+            }
+
+            const [finalMinerWeights, finalWeightsErr] = await calculateFinalMinerWeights(
+                uidPositions,
+                normalizedPositionScores,
+                poolWeights
+            );
+            if (finalWeightsErr) {
+                console.error('Error calculating final miner weights:', finalWeightsErr);
+                await waitRemaining(startTime);
+                continue;
+            }
+
+            // Log final weights for debugging
+            console.log('DEBUG: Final miner weights before EMA:');
+            Object.entries(finalMinerWeights).forEach(([uid, weight]) => {
+                console.log(`  UID ${uid}: ${weight}`);
+            });
+
+            // Update EMA weights (by uid)
+            emaWeights = updateEma(emaWeights, finalMinerWeights);
+
+            // Save weights data for debugging and analysis
+            const weightsData = JSON.stringify({
+                timestamp: new Date().toISOString(),
+                iteration,
+                network: {
+                    netuid: NETUID,
+                    totalMiners: validUIDs.length
+                },
+                weights: Object.fromEntries(
+                    validUIDs.map(uid => {
+                        const uidStr = uid.toString();
+                        const hotkey = uidToHotkey[uidStr];
+                        const ethAddress = hotkeyToEth[hotkey] || null;
+                        const weight = finalMinerWeights[uidStr] || 0;
+                        const positions = uidPositions[uidStr] || [];
+                        const totalScore = positions.reduce((sum, pos) => {
+                            const score = calculatePositionScore(pos, Number(pos.pool?.tick || 0));
+                            return sum + score.finalScore;
+                        }, 0);
+                        const positionDetails = positions.map(pos => {
+                            const score = calculatePositionScore(pos, Number(pos.pool?.tick || 0));
+                            return {
+                                id: pos.id,
+                                poolId: pos.pool?.id || 'unknown',
+                                liquidity: pos.liquidity,
+                                contribution: totalScore > 0 ? score.finalScore / totalScore : 0,
+                                tickRange: {
+                                    lower: pos.tickLower.tickIdx,
+                                    upper: pos.tickUpper.tickIdx,
+                                    current: pos.pool?.tick || 'unknown'
+                                }
+                            };
+                        });
+                        return [uidStr, {
+                            hotkey,
+                            ethAddress,
+                            weight,
+                            normalizedWeight: weight,
+                            positions: positionDetails
+                        }];
+                    })
+                ),
+                poolWeights,
+                finalMinerWeights, // now keyed by uid
+                voteStats: {
+                    totalAlphaTokens: votesData.totalAlphaTokens,
+                    numberOfVoters: votesData.votes.length,
+                    cacheStatus: votesData.cached ? 'cached' : 'fresh'
+                }
+            }, null, 2);
+            // Save weights data to file
+            const weightsDir = path.join(logDir, "output");
+            await fs.mkdir(weightsDir, { recursive: true });
+            const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+            const weightsFile = path.join(weightsDir, `weights_${timestamp}.json`);
+            await fs.writeFile(weightsFile, weightsData);
+            userLog(`Saved weights to ${weightsFile}`);
+
+            // Check if it's time to set weights
+            const timeSinceLastSet = Date.now() - lastSet;
+            if (timeSinceLastSet >= SET_INTERVAL_MS) {
+                if (!TEST_MODE) {
+                    const [setResult, setErr] = await setWeightsOnNetwork(finalMinerWeights);
+                    if (setErr) {
+                        console.error('Error setting weights:', setErr);
+                        consecutiveErrors++;
+                        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                            console.error(`Too many consecutive errors (${consecutiveErrors}), exiting...`);
+                            process.exit(1);
+                            return;
+                        }
+                    } else {
+                        userLog('Successfully set weights on network');
+                        lastSet = Date.now();
+                        consecutiveErrors = 0;
+                    }
+                } else {
+                    userLog('TEST_MODE: Skipping weight setting');
+                    lastSet = Date.now();
+                }
+            }
+
+            await waitRemaining(startTime);
+        } catch (err) {
+            console.error('Error in main loop:', err);
+            consecutiveErrors++;
+            if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                console.error(`Too many consecutive errors (${consecutiveErrors}), exiting...`);
+                process.exit(1);
+                return;
+            }
+            await delay(LOOP_DELAY_MS);
+        }
     }
 }
 
@@ -387,31 +738,56 @@ async function normalizeFinalMinerWeights(finalMinerWeights: Record<string, numb
 async function setWeightsOnNetwork(normalizedFinalMinerWeights: Record<string, number>): Promise<Result<Record<string, number>>> {
     if ((process.env.DEBUG_ON_SET_WEIGHTS || 'false').toLowerCase() === 'true') debugger;
     try {
+        // Always save weights to a timestamped JSON file for inspection
+        try {
+            const weightsDir = path.join(logDir, 'weights');
+            await fs.mkdir(weightsDir, { recursive: true });
+            const ts = new Date().toISOString().replace(/[:.]/g, '-');
+            const filePath = path.join(weightsDir, `${ts}.json`);
+            await fs.writeFile(filePath, JSON.stringify({
+                weights: normalizedFinalMinerWeights,
+                timestamp: new Date().toISOString(),
+                testMode: TEST_MODE
+            }, null, 2));
+            userLog(`Weights saved to ${filePath}`);
+        } catch (fileErr) {
+            console.error('Failed to write weights file:', fileErr);
+        }
+
         if (TEST_MODE) {
-            // Write the would be weights to a timestamped JSON file for inspection
-            try {
-                const weightsDir = path.join(logDir, 'weights');
-                await fs.mkdir(weightsDir, { recursive: true });
-                const ts = new Date().toISOString().replace(/[:.]/g, '-');
-                const filePath = path.join(weightsDir, `${ts}.json`);
-                await fs.writeFile(filePath, JSON.stringify(normalizedFinalMinerWeights, null, 2));
-                userLog(`[TEST_MODE] Weights saved to ${filePath}`);
-            } catch (fileErr) {
-                console.error('[TEST_MODE] Failed to write weights file:', fileErr);
-            }
             console.log('[TEST_MODE] Skipping setWeightsOnNetwork call. Weights that would be set:', JSON.stringify(normalizedFinalMinerWeights, null, 2));
             return [normalizedFinalMinerWeights, null];
         }
 
-        if (!btApi || !signer) return [{}, new Error('Bittensor API not initialized')];
+        if (!btApi || !signer) {
+            const error = new Error('Bittensor API not initialized');
+            console.error(error);
+            return [{}, error];
+        }
+
+        // Verify API connection is still active
+        try {
+            await btApi.rpc.chain.getHeader();
+        } catch (apiErr) {
+            const error = new Error(`Bittensor API connection lost: ${apiErr instanceof Error ? apiErr.message : String(apiErr)}`);
+            console.error(error);
+            return [{}, error];
+        }
 
         let entries = Object.entries(normalizedFinalMinerWeights);
 
         if (entries.length === 0) {
             console.warn('No miner weight data found – falling back to uniform weights across all registered UIDs.');
             const [uidsFallback, uidErr] = await fetchAllUids();
-            if (uidErr) return [{}, uidErr];
-            if (uidsFallback.length === 0) return [{}, new Error('Unable to determine UIDs for uniform weight distribution')];
+            if (uidErr) {
+                console.error('Failed to fetch UIDs for fallback:', uidErr);
+                return [{}, uidErr];
+            }
+            if (uidsFallback.length === 0) {
+                const error = new Error('Unable to determine UIDs for uniform weight distribution');
+                console.error(error);
+                return [{}, error];
+            }
 
             const uniform = 1 / uidsFallback.length;
             normalizedFinalMinerWeights = Object.fromEntries(uidsFallback.map(uid => [uid.toString(), uniform]));
@@ -425,7 +801,11 @@ async function setWeightsOnNetwork(normalizedFinalMinerWeights: Record<string, n
         // Scale to u16 (0..65535) and ensure sum == 65535
         let scaled = floatWeights.map(w => Math.round(w * 65535));
         const totalScaled = scaled.reduce((a, b) => a + b, 0);
-        if (totalScaled === 0) return [{}, new Error('All scaled weights are zero')];
+        if (totalScaled === 0) {
+            const error = new Error('All scaled weights are zero');
+            console.error(error);
+            return [{}, error];
+        }
         if (totalScaled !== 65535) {
             scaled = scaled.map(w => Math.round((w * 65535) / totalScaled));
         }
@@ -436,14 +816,20 @@ async function setWeightsOnNetwork(normalizedFinalMinerWeights: Record<string, n
         console.log('Uids:', uids);
         console.log('Scaled:', scaled);
         console.log('Version key:', versionKey);
-        // Submit extrinsic
-        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-        // @ts-ignore – dynamic lookup of pallet in generated types
-        const tx = btApi.tx.subtensorModule.setWeights(NETUID, uids, scaled, versionKey);
 
-        await new Promise<void>((resolve, reject) => {
+        // Submit extrinsic with timeout
+        const txPromise = new Promise<void>((resolve, reject) => {
+            const timeoutId = setTimeout(() => {
+                reject(new Error('Transaction timeout after 5 minutes'));
+            }, 300000); // 5 minute timeout
+
+            // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+            // @ts-ignore – dynamic lookup of pallet in generated types
+            const tx = btApi.tx.subtensorModule.setWeights(NETUID, uids, scaled, versionKey);
+
             tx.signAndSend(signer!, { nonce: -1 }, (result: ISubmittableResult) => {
                 if (result.status.isFinalized || result.status.isInBlock) {
+                    clearTimeout(timeoutId);
                     if (result.dispatchError) {
                         let errMsg = result.dispatchError.toString();
                         if (result.dispatchError.isModule) {
@@ -455,14 +841,20 @@ async function setWeightsOnNetwork(normalizedFinalMinerWeights: Record<string, n
                         resolve();
                     }
                 } else if (result.isError) {
+                    clearTimeout(timeoutId);
                     reject(new Error('Transaction error'));
                 }
-            }).catch(reject);
+            }).catch(err => {
+                clearTimeout(timeoutId);
+                reject(err);
+            });
         });
 
+        await txPromise;
         return [normalizedFinalMinerWeights, null];
     } catch (err) {
         const error = err instanceof Error ? err : new Error(String(err));
+        console.error('Error in setWeightsOnNetwork:', error);
         return [{}, error];
     }
 }
@@ -578,32 +970,21 @@ async function calculateFinalMinerWeights(
                 const positionId = pos.id;
                 const poolId = pos.pool?.id;
 
-                if (!poolId || typeof poolId !== 'string') {
-                    // Already warned in previous step, skip silently or add minimal log
-                    // console.warn(`Skipping weight contribution for Pos ${positionId} (Miner ${minerId}): Missing pool ID.`);
-                    continue;
-                }
+                if (!poolId || typeof poolId !== 'string') continue;
 
                 const normalizedScore = normalizedPositionScores[positionId] ?? 0;
                 let voteWeight = 0;
                 try {
-                    // Pool weights keys are checksummed from CalculatePoolWeights
                     const checksummedPoolId = getAddress(poolId);
                     voteWeight = poolWeights[checksummedPoolId] || 0;
                 } catch (e) {
-                    // Handle cases where poolId might not be a valid address format
-                    // console.warn(`Could not get vote weight for pool ${poolId} (Pos ${positionId}): Invalid address format?`);
                     voteWeight = 0;
                 }
 
                 const contribution = normalizedScore * voteWeight;
                 minerTotalContribution += contribution;
-
-                // Optional detailed log per position
-                // console.log(`  Pos ${positionId} (Miner ${minerId}, Pool ${checksummedPoolId}): NormScore=${normalizedScore.toFixed(6)}, VoteWeight=${voteWeight.toFixed(6)}, Contribution=${contribution.toFixed(6)}`);
             }
             finalMinerWeights[minerId] = minerTotalContribution;
-            // console.log(`--- Miner ${minerId} Total Weight Contribution: ${minerTotalContribution.toFixed(6)} ---`);
         }
         
         console.log("Raw Final Miner Weights:", finalMinerWeights);
@@ -613,26 +994,25 @@ async function calculateFinalMinerWeights(
         let totalWeight = 0;
         for (const minerId in finalMinerWeights) {
             if (finalMinerWeights[minerId] <= threshold) {
-                 console.log(`  Zeroing out weight for miner ${minerId} (${finalMinerWeights[minerId]} <= ${threshold})`);
-                 finalMinerWeights[minerId] = 0;
+                console.log(`  Zeroing out weight for miner ${minerId} (${finalMinerWeights[minerId]} <= ${threshold})`);
+                finalMinerWeights[minerId] = 0;
             }
             totalWeight += finalMinerWeights[minerId];
         }
         
         console.log("Total weight after zeroing small values:", totalWeight);
 
-        // Normalize weights if totalWeight > 0
+        // Normalize weights to sum to 1
         if (totalWeight > 0) {
             console.log("Normalizing final miner weights...");
             for (const minerId in finalMinerWeights) {
-                finalMinerWeights[minerId] /= totalWeight;
+                finalMinerWeights[minerId] = finalMinerWeights[minerId] / totalWeight;
             }
         } else {
-             console.log("Total weight is 0, skipping normalization. All miner weights are 0.");
+            console.log("Total weight is 0, skipping normalization. All miner weights are 0.");
         }
 
         console.log("Finished calculating and normalizing final miner weights.");
-        // The weights are now normalized (sum to 1) or all zero.
         return [finalMinerWeights, null];
 
     } catch (err) {
@@ -788,12 +1168,136 @@ async function fetchAllUids(): Promise<Result<number[]>> {
     }
 }
 
-main().then((result) => {
-    if (result && result[1]) {
-        console.error('Error:', result[1]);
-    } else if (result) {
-        console.log('Result:', result[0]);
+async function fetchVotesFromServer(): Promise<[VotesResponse | null, Error | null]> {
+    const now = Date.now();
+    
+    // Return cached data if it exists and is not expired
+    if (cachedVotes && (now - cachedVotes.timestamp) < CACHE_DURATION_MS) {
+        userLog('Using cached votes data');
+        return [cachedVotes.data, null];
     }
-}).catch((err) => {
+
+    const maxRetries = 3;
+    let lastError: Error | null = null;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            userLog(`Fetching fresh votes data from server (attempt ${attempt}/${maxRetries})`);
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+
+            const response = await fetch('https://77.creativebuilds.io/allVotes', {
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+
+            if (!response.ok) {
+                throw new Error(`Server responded with status ${response.status}: ${response.statusText}`);
+            }
+
+            const data = await response.json() as VotesResponse;
+            
+            if (!data.success) {
+                throw new Error(data.error || 'Failed to fetch votes');
+            }
+            
+            // Update cache
+            cachedVotes = {
+                data,
+                timestamp: now
+            };
+            
+            return [data, null];
+        } catch (err) {
+            lastError = err instanceof Error ? err : new Error(String(err));
+            if (err instanceof Error && err.name === 'AbortError') {
+                console.error('Request timed out');
+            } else {
+                console.error(`Attempt ${attempt} failed:`, lastError);
+            }
+            
+            if (attempt < maxRetries) {
+                const delayMs = Math.min(1000 * Math.pow(2, attempt - 1), 10000); // Exponential backoff, max 10s
+                await delay(delayMs);
+            }
+        }
+    }
+
+    // If we have cached data but it's expired, use it as fallback
+    if (cachedVotes) {
+        console.warn('Using expired cached data due to fetch failures');
+        return [cachedVotes.data, null];
+    }
+
+    return [null, lastError];
+}
+
+async function fetchLiquidityPositions(
+  ethereumAddresses: string[],
+  votedPoolIds: string[]
+): Promise<[Record<string, LiquidityPosition[]>, Error | null]> {
+  const positions: Record<string, LiquidityPosition[]> = {};
+  
+  try {
+    for (const address of ethereumAddresses) {
+      const variables = {
+        owner: address.toLowerCase(),
+        poolIds: votedPoolIds
+      };
+
+      const data = await UNISWAP_V3_CLIENT.request<UniswapResponse>(POSITIONS_QUERY, variables);
+      if (data.positions && data.positions.length > 0) {
+        positions[address] = data.positions.map(pos => ({
+          id: pos.id,
+          owner: pos.owner,
+          token0: {
+            id: pos.pool.token0.id,
+            symbol: pos.pool.token0.symbol,
+            decimals: pos.pool.token0.decimals,
+            name: pos.pool.token0.name || pos.pool.token0.symbol
+          },
+          token1: {
+            id: pos.pool.token1.id,
+            symbol: pos.pool.token1.symbol,
+            decimals: pos.pool.token1.decimals,
+            name: pos.pool.token1.name || pos.pool.token1.symbol
+          },
+          liquidity: pos.liquidity,
+          tickLower: {
+            id: pos.tickLower.id,
+            tickIdx: pos.tickLower.tickIdx
+          },
+          tickUpper: {
+            id: pos.tickUpper.id,
+            tickIdx: pos.tickUpper.tickIdx
+          },
+          pool: {
+            feeTier: pos.pool.feeTier,
+            id: pos.pool.id,
+            tick: pos.pool.tick
+          }
+        }));
+      }
+    }
+    return [positions, null];
+  } catch (err) {
+    return [{}, err instanceof Error ? err : new Error(String(err))];
+  }
+}
+
+async function fetchRegistryMap(): Promise<[RegistryMapResponse | null, Error | null]> {
+  try {
+    const response = await fetch('https://77.creativebuilds.io/allMiners');
+    const data = await response.json() as RegistryMapResponse;
+    
+    if (!data.success) return [null, new Error(data.error || 'Failed to fetch miners')];
+    return [data, null];
+  } catch (err) {
+    return [null, err instanceof Error ? err : new Error(String(err))];
+  }
+}
+
+main().catch((err) => {
     console.error('Unhandled error:', err);
+    process.exit(1);
 });
