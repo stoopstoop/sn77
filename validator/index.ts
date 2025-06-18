@@ -36,7 +36,8 @@ import { GraphQLClient } from 'graphql-request';
 //  Logging Configuration
 // ----------------------
 // Must be set up *before* other imports execute arbitrary logging.
-const LOG_CONSOLE = (process.env.LOG || 'false').toLowerCase() === 'true';
+const TEST_MODE = (process.env.TEST_MODE || 'false').toLowerCase() === 'true';
+const LOG_CONSOLE = (process.env.LOG || 'false').toLowerCase() === 'true' || TEST_MODE;
 const logDir = path.join(__dirname, '..', 'logs');
 fs.mkdir(logDir, { recursive: true }).catch(() => {});
 const LOG_FILE_PATH = path.join(logDir, `validator-${new Date().toISOString().slice(0, 10)}.log`);
@@ -98,6 +99,18 @@ function userLog(...args: any[]): void {
 
 // Load environment variables from .env file
 dotenv.config();
+
+// Toggle test mode via env var; when true, weights are not pushed on-chain
+// Default to false unless explicitly set to true
+if (TEST_MODE) {
+    console.log('Running in TEST_MODE: weights will be saved to JSON files instead of being pushed on-chain');
+    console.log('Console logging is automatically enabled in TEST_MODE');
+    // Ensure weights directory exists
+    const weightsDir = path.join(logDir, 'weights');
+    fs.mkdir(weightsDir, { recursive: true }).catch(err => {
+        console.error('Failed to create weights directory:', err);
+    });
+}
 
 interface LiquidityPosition {
     id: string;
@@ -660,17 +673,23 @@ async function main(): Promise<void> {
             // Check if it's time to set weights
             const timeSinceLastSet = Date.now() - lastSet;
             if (timeSinceLastSet >= SET_INTERVAL_MS) {
-                const [setResult, setErr] = await setWeightsOnNetwork(finalMinerWeights);
-                if (setErr) {
-                    console.error('Error setting weights:', setErr);
-                    consecutiveErrors++;
-                    if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-                        console.error(`Too many consecutive errors (${consecutiveErrors}), exiting...`);
-                        process.exit(1);
-                        return;
+                if (!TEST_MODE) {
+                    const [setResult, setErr] = await setWeightsOnNetwork(finalMinerWeights);
+                    if (setErr) {
+                        console.error('Error setting weights:', setErr);
+                        consecutiveErrors++;
+                        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                            console.error(`Too many consecutive errors (${consecutiveErrors}), exiting...`);
+                            process.exit(1);
+                            return;
+                        }
+                    } else {
+                        userLog('Successfully set weights on network');
+                        lastSet = Date.now();
+                        consecutiveErrors = 0;
                     }
                 } else {
-                    userLog('Successfully set weights on network');
+                    userLog('TEST_MODE: Skipping weight setting');
                     lastSet = Date.now();
                     consecutiveErrors = 0;
                 }
@@ -729,10 +748,16 @@ async function setWeightsOnNetwork(normalizedFinalMinerWeights: Record<string, n
             await fs.writeFile(filePath, JSON.stringify({
                 weights: normalizedFinalMinerWeights,
                 timestamp: new Date().toISOString(),
+                testMode: TEST_MODE
             }, null, 2));
             userLog(`Weights saved to ${filePath}`);
         } catch (fileErr) {
             console.error('Failed to write weights file:', fileErr);
+        }
+
+        if (TEST_MODE) {
+            console.log('[TEST_MODE] Skipping setWeightsOnNetwork call. Weights that would be set:', JSON.stringify(normalizedFinalMinerWeights, null, 2));
+            return [normalizedFinalMinerWeights, null];
         }
 
         if (!btApi || !signer) {

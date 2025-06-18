@@ -26,17 +26,90 @@ cp .env.example .env
 # then fill in the blanks – see the Environment section below
 ```
 
-3. **Spin-up The Graph locally**
-
-```bash
-just start # boots docker + deploys the subgraph
-```
-
-4. **Query current pool weights**
+3. **Query current pool weights**
 
 ```bash
 bun run pools
 ```
+
+---
+
+## User Roles & Actions
+
+### 🏦 Token Holders (Voters)
+
+Token holders can vote on which liquidity pools should receive weight in the system.
+
+**What you can do:**
+- **Vote on pools**: Submit weighted votes for active liquidity pools
+- **Check pool status**: View current pool weights and rankings
+- **Monitor your voting power**: Track your influence based on token balance
+
+**Key command:**
+```bash
+# Submit votes for pools (weights must sum to 10000)
+just vote --votes 0xPOOL_A,6000;0xPOOL_B,4000
+
+# Alternatively just run
+just vote
+# and a prompt will ask you for the pools you wish to vote for
+```
+
+**Setup required:**
+- `HOLDER_COLDKEY` in `.env` (your Bittensor coldkey for signing votes)
+- EVM private key for transaction signing
+
+### ⚡ Validators
+
+Validators read on-chain votes, normalize them by token-holder balance, mix-in Uniswap liquidity, and periodically push **final miner weights** to subnet 77.
+
+**What you can do:**
+- **Run weight calculation**: Process votes and compute final miner weights
+- **Submit weights to subnet**: Push calculated weights to the Bittensor network
+- **Monitor system health**: Track voting patterns and pool performance
+
+**Key commands:**
+```bash
+# Start the validator (processes votes and submits weights)
+just validate
+
+# Run in test mode (compute weights but skip submission)
+TEST_MODE=true just validate
+
+# Enable verbose logging
+LOG=true just validate
+```
+
+**Setup required:**
+- `VALIDATOR_HOTKEY_URI` in `.env` (your validator hotkey)
+- `THEGRAPH_API_KEY` in `.env` (for Uniswap V3 LP data)
+- Funds on associated EVM address for gas
+
+### ⛏️ Miners
+
+Miners provide liquidity to pools and can register their addresses to participate in the system.
+
+**What you can do:**
+- **Register your address**: Link your Bittensor public key to an EVM address
+- **Provide liquidity**: Add liquidity to pools to earn rewards
+- **Monitor earnings**: Track your pool performance and rewards
+
+**Key commands:**
+```bash
+# Register your Bittensor public key with an EVM address
+just register
+
+# Check your registration status
+bunx tsx scripts/check-key.ts
+
+# View pool analytics and your position
+bun run pools
+```
+
+**Setup required:**
+- `MINER_HOTKEY` in `.env` (your Bittensor hotkey)
+- `ETH_KEY` in `.env` (your Ethereum private key)
+- Bittensor wallet with stake on subnet 77
 
 ---
 
@@ -45,62 +118,23 @@ bun run pools
 | Script | Purpose | Usage |
 |--------|---------|-----------------|
 | `create-key.ts` | Generate or import an **EVM keypair** and derive the corresponding **SS58** address. Stores everything in `.keys/` and can update `.env`. | `bunx tsx scripts/create-key.ts` |
-| `register.ts` | Link a **Bittensor public-key** → **EVM address** on-chain via `registerAddress`. Requires the `MINER_COLD_PRIVKEY` that owns the public key. | `bunx tsx scripts/register.ts` |
-| `vote.ts` | Submit pool-weight votes. Accepts a string such as `0xPOOL_A,6000;0xPOOL_B,4000` that must sum to `10000`. | `bunx tsx scripts/vote.ts --votes 0x..,7000;0x..,3000` |
+| `register.ts` | Link a **Bittensor hotkey** → **EVM address** on-chain via `claimAddress`. Requires `MINER_HOTKEY` and `ETH_KEY` environment variables. | `just register` |
+| `vote.ts` | Interactive pool-weight voting. Searches and selects pools, then submits weighted votes that sum to 10000. | `just vote` |
 | `pools.ts` | Offline analytics: combines on-chain votes, Taostats balances, and Uniswap-V3 liquidity to print a ranked weight table. | `bun run pools` |
-| `balance.ts` | Display EVM balances for every key inside `.keys/`. | `NETWORK=mainnet bunx tsx scripts/balance.ts` |
 
 > Run scripts with `LOG=true` to enable verbose logging where available.
 
 ---
 
-## Running a Validator
+## Justfile Commands
 
-Validators read on-chain votes, normalise them by token-holder balance, mix-in Uniswap liquidity, and periodically push **final miner weights** to subnet 77.
+The project uses `just` as a command runner for common tasks:
 
-### 1. Prerequisites
-
-• Bun
-• Docker (only needed for the local Graph Node)  
-• A registered **validator hotkey** with stake on subnet 77
-• Funds (≈ 0.02 TAO) on the associated **EVM address** for gas  
-• Environment variables (see next section)  
-
-### 2. Boot a local Graph Node
-
-Local indexing keeps the validator independent from external gateways.
-
-```bash
-just start         # boots Postgres, IPFS, Graph-Node, deploys the subgraph
-# …wait until "Graph Node is ready!"
-```
-
-Under the hood `just start` runs these tasks:
-
-1. `docker-start` – compose stack with the `graph` profile  
-2. `wait-for-graph-node` – loop until `/health` endpoint reports OK  
-3. `deploy-subgraph` – `npm i && graph codegen && graph build && graph deploy`  
-
-Stop everything with:
-
-```bash
-just down          # or `just docker-clean` to wipe volumes
-```
-
-> The subgraph is exposed at `http://localhost:8050/subgraphs/name/seventy-seven`.
-
-### 3. Start the validator
-
-```bash
-bunx tsx validator/index.ts
-```
-
-Optional flags (via env):
-
-* `TEST_MODE=true` – compute weights but **skip** on-chain submission
-* `LOG=true` – stream logs to stdout in addition to `./logs/`
-
-Weights are recalculated every few minutes and submitted with `setWeights` (unless `TEST_MODE` is enabled).
+| Command | Description |
+|---------|-------------|
+| `just register` | Register a Bittensor public key with an EVM address |
+| `just vote` | Submit votes for liquidity pools |
+| `just validate` | Start the validator to process votes and submit weights |
 
 ---
 
@@ -109,50 +143,34 @@ Weights are recalculated every few minutes and submitted with `setWeights` (unle
 Create a `.env` file in the project root. The most important keys are:
 
 ```dotenv
-# Bittensor / Subnet
-NETUID=77
-BITTENSOR_WS_URL=wss://entrypoint-finney.opentensor.ai:443  # or your own
-VALIDATOR_HOTKEY_URI="//Alice"                               # sr25519 URI
+# VALIDATOR ONLY: this can be a private key, URI, or mnemonic
+# Used to set weights on chain
+VALIDATOR_HOTKEY_URI=
 
-# Keys
-MINER_COLD_PRIVKEY=                                     # Ed25519 cold-key seed for voting
-ETH_PRIVKEY=                                            # EVM key with TAO for gas
+# VALIDATOR ONLY: used to fetch uniswap v3 LP positions for miners
+THEGRAPH_API_KEY= 
 
-# Contracts
-SEVENTY_SEVEN_V1_CONTRACT_ADDRESS=0x...                 # SeventySevenV1
-AUCTION_CONTRACT_ADDRESS=0x...
+# VALIDATOR ONLY: set to 'true' to run in test mode (weights saved to files, not submitted to network)
+TEST_MODE=false
 
-# Indexing / Analytics
-SUBGRAPH_URL=http://localhost:8050/subgraphs/name/seventy-seven
-TAOSTATS_API_KEY=...                                    # Get one at https://taostats.io
-THEGRAPH_API_KEY=...                                    # Free key at https://thegraph.com
-INFURA_API_KEY=...                                      # Needed for main-net contract checks
+# VOTER ONLY: hex string starting with 0x
+# Used to sign votes in vote.ts script  
+HOLDER_COLDKEY=
 
-# Misc
-RPC_URL=https://lite.chain.opentensor.ai                # Public archive RPC
-HARDHAT_NETWORK=bittensorLocal                          # optional
+# MINER ONLY: hex string starting with 0x
+# Used for hotkey in register.ts script
+MINER_HOTKEY=
+
+# MINER ONLY: ethereum private key hex string
+# Used for ethereum wallet in register.ts script
+ETH_KEY=
 ```
 
 *Everything else has sensible defaults or is only required for specific tasks.*
 
 ### Obtaining required API keys
 
-• **Taostats**: You can retrieve your taostats api key here https://dash.taostats.io/api-keys
-
 • **The Graph**: Log in to [Subgraph Studio](https://thegraph.com/studio/apikeys/) → **API Keys** in the sidebar → *Create API Key* → copy the generated token. See the official guide for details ([docs](https://thegraph.com/docs/en/subgraphs/querying/managing-api-keys/)).
-
----
-
-## justfile reference
-
-| Target | Description |
-|--------|-------------|
-| `just start` | Bring up Graph Node stack **and** deploy the subgraph |
-| `just down` | Graceful shutdown (containers stay cached) |
-| `docker-clean` | Tear-down **and** remove volumes |
-| `deploy-subgraph` | Re-deploy only (expects Graph Node to be up) |
-
-See the [justfile](./justfile) for the full command definitions.
 
 ---
 
