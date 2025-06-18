@@ -1,14 +1,14 @@
 # Register a Bittensor public key with an EVM address
 register:
-  bunx tsx scripts/register.ts
+  bun run scripts/register.ts
 
 # Submit votes for liquidity pools
 vote:
-  bunx tsx scripts/vote.ts
+  bun run scripts/vote.ts
 
 # Start the validator to process votes and submit weights
 validate:
-  bunx tsx validator/index.ts
+  bun run validator/index.ts
 
 # Check current pool weights and rankings
 pools:
@@ -16,16 +16,16 @@ pools:
 
 # Display EVM balances for all keys
 balance:
-  NETWORK=mainnet bunx tsx scripts/balance.ts
+  NETWORK=mainnet bun run scripts/balance.ts
 
 # Generate or import an EVM keypair
 create-key:
-  bunx tsx scripts/create-key.ts
+  bun run scripts/create-key.ts
 
 # Check if a Bittensor key is registered
 check-key:
-  bunx tsx scripts/check-key.ts
+  bun run scripts/check-key.ts
 
 # Calculate and display weight distributions
 weights:
-  bunx tsx scripts/weights.ts 
+  bun run scripts/weights.ts 
