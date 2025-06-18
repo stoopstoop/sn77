@@ -12,7 +12,7 @@ validate:
 
 # Check current pool weights and rankings
 pools:
-  bun run pools
+  bun run scripts/pools.ts
 
 # Display EVM balances for all keys
 balance:
