@@ -612,64 +612,6 @@ async function main(): Promise<void> {
             // Update EMA weights (by uid)
             emaWeights = updateEma(emaWeights, finalMinerWeights);
 
-            // Save weights data for debugging and analysis
-            const weightsData = JSON.stringify({
-                timestamp: new Date().toISOString(),
-                iteration,
-                network: {
-                    netuid: NETUID,
-                    totalMiners: validUIDs.length
-                },
-                weights: Object.fromEntries(
-                    validUIDs.map(uid => {
-                        const uidStr = uid.toString();
-                        const hotkey = uidToHotkey[uidStr];
-                        const ethAddress = hotkeyToEth[hotkey] || null;
-                        const weight = finalMinerWeights[uidStr] || 0;
-                        const positions = uidPositions[uidStr] || [];
-                        const totalScore = positions.reduce((sum, pos) => {
-                            const score = calculatePositionScore(pos, Number(pos.pool?.tick || 0));
-                            return sum + score.finalScore;
-                        }, 0);
-                        const positionDetails = positions.map(pos => {
-                            const score = calculatePositionScore(pos, Number(pos.pool?.tick || 0));
-                            return {
-                                id: pos.id,
-                                poolId: pos.pool?.id || 'unknown',
-                                liquidity: pos.liquidity,
-                                contribution: totalScore > 0 ? score.finalScore / totalScore : 0,
-                                tickRange: {
-                                    lower: pos.tickLower.tickIdx,
-                                    upper: pos.tickUpper.tickIdx,
-                                    current: pos.pool?.tick || 'unknown'
-                                }
-                            };
-                        });
-                        return [uidStr, {
-                            hotkey,
-                            ethAddress,
-                            weight,
-                            normalizedWeight: weight,
-                            positions: positionDetails
-                        }];
-                    })
-                ),
-                poolWeights,
-                finalMinerWeights, // now keyed by uid
-                voteStats: {
-                    totalAlphaTokens: votesData.totalAlphaTokens,
-                    numberOfVoters: votesData.votes.length,
-                    cacheStatus: votesData.cached ? 'cached' : 'fresh'
-                }
-            }, null, 2);
-            // Save weights data to file
-            const weightsDir = path.join(logDir, "output");
-            await fs.mkdir(weightsDir, { recursive: true });
-            const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-            const weightsFile = path.join(weightsDir, `weights_${timestamp}.json`);
-            await fs.writeFile(weightsFile, weightsData);
-            userLog(`Saved weights to ${weightsFile}`);
-
             // Check if it's time to set weights
             const timeSinceLastSet = Date.now() - lastSet;
             if (timeSinceLastSet >= SET_INTERVAL_MS) {
