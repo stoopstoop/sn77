@@ -2,12 +2,6 @@
 
 > A complete on-chain liquidity mining system for the Bittensor ecosystem.
 
-This repository contains:
-
-1. `Subnet77LiquidityAuction.sol` – a liquidity pool auction that issues rewards based on community voting.
-2. `SeventySevenV1` – a helper contract that lets **Token Holders** vote on which pools should receive weight.
-3. Off-chain tooling (TypeScript + Python) for voters, validators, and data aggregation.
-4. A ready-to-run local Graph Node stack (Postgres + IPFS) for ultra-fast subgraph indexing.
 
 ---
 
@@ -83,7 +77,6 @@ LOG=true just validate
 **Setup required:**
 - `VALIDATOR_HOTKEY_URI` in `.env` (your validator hotkey)
 - `THEGRAPH_API_KEY` in `.env` (for Uniswap V3 LP data)
-- Funds on associated EVM address for gas
 
 ### ⛏️ Miners
 
