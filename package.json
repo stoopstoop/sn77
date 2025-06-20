@@ -1,5 +1,6 @@
 {
-  "name": "hardhat-project",
+  "name": "sn77-liquidity",
+  "version": "1.0.0",
   "devDependencies": {
     "@graphprotocol/graph-cli": "^0.96.0",
     "@graphprotocol/graph-ts": "^0.38.0",
