@@ -1,6 +1,9 @@
 import { formatAddress } from '../utils/poolUtils';
+import * as fs from 'fs';
+import * as readline from 'readline';
 
-const PRODUCTION_URL = 'https://77.creativebuilds.io';
+// const PRODUCTION_URL = 'https://77.creativebuilds.io';
+const PRODUCTION_URL = 'http://localhost:3000';
 
 interface Voter {
   address: string;
@@ -60,6 +63,14 @@ function formatPercentage(num: number): string {
   return `${(num / 10000 * 100).toFixed(2)}%`;
 }
 
+function formatWeightPercentage(weight: number): string {
+  const percentage = weight / 10000 * 100;
+  if (percentage >= 100) return `${percentage.toFixed(2)}%`;
+  if (percentage >= 10) return `${percentage.toFixed(2)}%`;
+  if (percentage >= 1) return `${percentage.toFixed(3)}%`;
+  return `${percentage.toFixed(4)}%`;
+}
+
 function formatFee(fee: number): string {
   return `${(fee / 10000).toFixed(2)}%`;
 }
@@ -78,7 +89,7 @@ function displayPoolsTable(pools: Pool[], totalAlphaTokens: number): void {
     const poolAddress = formatAddress(pool.address);
     const tokenPair = `${pool.token0Symbol}/${pool.token1Symbol}`;
     const fee = formatFee(pool.fee);
-    const totalWeight = formatNumber(pool.totalWeight);
+    const totalWeight = formatWeightPercentage(pool.totalWeight);
     const voterCount = pool.voters.length;
 
     console.log(`🏊 Pool ${index + 1}:`);
@@ -105,6 +116,48 @@ function displayPoolsTable(pools: Pool[], totalAlphaTokens: number): void {
   });
 }
 
+function generatePoolCSV(pools: Pool[]): string {
+  const headers = ['Pool Address', 'Token Pair', 'Fee (%)', 'Total Weight (%)', 'Voter Count'];
+  const rows = pools.map(pool => [
+    pool.address,
+    `${pool.token0Symbol}/${pool.token1Symbol}`,
+    (pool.fee / 10000).toFixed(2),
+    formatWeightPercentage(pool.totalWeight).replace('%', ''),
+    pool.voters.length.toString()
+  ]);
+  
+  return [headers.join(','), ...rows.map(row => row.join(','))].join('\n');
+}
+
+function savePoolCSV(pools: Pool[]): void {
+  const csvContent = generatePoolCSV(pools);
+  const filename = `pools_${new Date().toISOString().split('T')[0]}.csv`;
+  
+  try {
+    fs.writeFileSync(filename, csvContent);
+    console.log(`✅ Pool data saved to ${filename}`);
+  } catch (error) {
+    console.error('❌ Error saving CSV file:', error);
+  }
+}
+
+async function askForCSVSave(pools: Pool[]): Promise<void> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  return new Promise((resolve) => {
+    rl.question('\n💾 Would you like to save pool data to CSV? (y/n): ', (answer) => {
+      rl.close();
+      if (answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes') {
+        savePoolCSV(pools);
+      }
+      resolve();
+    });
+  });
+}
+
 async function main(): Promise<void> {
   console.log('🔍 Fetching pool information...');
   
@@ -124,6 +177,8 @@ async function main(): Promise<void> {
   if (poolsData.cached) {
     console.log('💡 Data served from cache');
   }
+
+  await askForCSVSave(poolsData.pools);
 }
 
 main()

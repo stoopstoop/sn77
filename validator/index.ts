@@ -465,6 +465,34 @@ async function main(): Promise<void> {
             userLog(`Number of voters: ${Array.isArray(votesData.votes) ? votesData.votes.length : 'invalid'}`);
             userLog(`Cache status: ${votesData.cached ? 'Using cached data' : 'Fresh data'}`);
 
+            // Ensure votesData.votes is an array before processing
+            if (!Array.isArray(votesData.votes)) {
+                console.error('votesData.votes is not an array:', typeof votesData.votes, votesData.votes);
+                console.error('Full votesData structure:', JSON.stringify(votesData, null, 2));
+                
+                // Try to find votes in different possible locations
+                let foundVotes: any[] | null = null;
+                const votesDataAny = votesData as any;
+                if (votesDataAny.data && Array.isArray(votesDataAny.data.votes)) {
+                    foundVotes = votesDataAny.data.votes;
+                    console.log('Found votes in votesData.data.votes');
+                } else if (votesDataAny.result && Array.isArray(votesDataAny.result.votes)) {
+                    foundVotes = votesDataAny.result.votes;
+                    console.log('Found votes in votesData.result.votes');
+                } else if (Array.isArray(votesDataAny)) {
+                    foundVotes = votesDataAny;
+                    console.log('Found votes as direct array in votesData');
+                }
+                
+                if (foundVotes) {
+                    console.log('Using fallback votes data');
+                    (votesData as any).votes = foundVotes;
+                } else {
+                    await waitRemaining(startTime);
+                    continue;
+                }
+            }
+
             // Process votes and calculate pool weights
             const poolWeights: Record<string, number> = {};
             const votedPoolIds = new Set<string>();
@@ -1138,7 +1166,16 @@ async function fetchVotesFromServer(): Promise<[VotesResponse | null, Error | nu
                 throw new Error(`Server responded with status ${response.status}: ${response.statusText}`);
             }
 
+            // Debug: Log response headers
+            console.log('DEBUG: Response headers:', Object.fromEntries(response.headers.entries()));
+            console.log('DEBUG: Content-Type:', response.headers.get('content-type'));
+
             const data = await response.json() as VotesResponse;
+            
+            // Debug: Log the raw response structure
+            console.log('DEBUG: Raw response from server:', JSON.stringify(data, null, 2));
+            console.log('DEBUG: votes property type:', typeof data.votes);
+            console.log('DEBUG: votes property value:', data.votes);
             
             if (!data.success) {
                 throw new Error(data.error || 'Failed to fetch votes');
