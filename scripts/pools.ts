@@ -2,8 +2,7 @@ import { formatAddress } from '../utils/poolUtils';
 import * as fs from 'fs';
 import * as readline from 'readline';
 
-// const PRODUCTION_URL = 'https://77.creativebuilds.io';
-const PRODUCTION_URL = 'http://localhost:3000';
+const PRODUCTION_URL = process.env.PRODUCTION_URL || 'https://77.creativebuilds.io';
 
 interface Voter {
   address: string;
