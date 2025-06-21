@@ -84,6 +84,9 @@ function displayPoolsTable(pools: Pool[], totalAlphaTokens: number): void {
 
   console.log(`Total Pools: ${pools.length} | Total Alpha Tokens: ${formatAlphaBalance(totalAlphaTokens)}\n`);
 
+  const totalGlobalVoterWeight = pools.reduce((total, pool) => 
+    total + pool.voters.reduce((poolTotal, voter) => poolTotal + voter.weight, 0), 0);
+
   pools.forEach((pool, index) => {
     const poolAddress = formatAddress(pool.address);
     const tokenPair = `${pool.token0Symbol}/${pool.token1Symbol}`;
@@ -102,12 +105,11 @@ function displayPoolsTable(pools: Pool[], totalAlphaTokens: number): void {
       console.log('   Voter Details:');
       pool.voters.forEach((voter, voterIndex) => {
         const voterAddress = formatAddress(voter.address);
-        const weight = formatNumber(voter.weight);
         const alphaBalance = formatAlphaBalance(voter.alphaBalance);
-        const multiplier = voter.weightMultiplier.toFixed(4);
+        const weightPercent = totalGlobalVoterWeight > 0 ? (voter.weight / totalGlobalVoterWeight) * 100 : 0;
         
         console.log(`     ${voterIndex + 1}. ${voterAddress}`);
-        console.log(`        Weight: ${weight} | Alpha: ${alphaBalance} | Multiplier: ${multiplier}`);
+        console.log(`        Weight: ${weightPercent.toFixed(2)}% | Alpha: ${alphaBalance}`);
       });
     }
     

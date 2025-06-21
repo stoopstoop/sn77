@@ -128,6 +128,8 @@ interface LiquidityPosition {
         symbol: string;
     };
     liquidity: string;
+    token0Balance: string;
+    token1Balance: string;
     tickLower: {
         id: string;
         tickIdx: string;
@@ -213,7 +215,7 @@ const UNISWAP_V3_CLIENT = new GraphQLClient(UNISWAP_V3_SUBGRAPH_URL, {
 // Query to get positions for a specific owner
 const POSITIONS_QUERY = `
   query GetPositions($owner: String!, $poolIds: [String!]!) {
-    positions(where: { owner: $owner, pool_in: $poolIds }) {
+    positions(where: { owner: $owner, pool_in: $poolIds, liquidity_gt:"1", token0Balance_gt: "0", token1Balance_gt: "0" }) {
       id
       owner
       pool {
@@ -242,6 +244,8 @@ const POSITIONS_QUERY = `
         tickIdx
       }
       liquidity
+      token0Balance
+      token1Balance
     }
   }
 `;
@@ -275,6 +279,8 @@ interface UniswapPosition {
     tickIdx: string;
   };
   liquidity: string;
+  token0Balance: string;
+  token1Balance: string;
 }
 
 interface UniswapResponse {
@@ -1243,6 +1249,8 @@ async function fetchLiquidityPositions(
             name: pos.pool.token1.name || pos.pool.token1.symbol
           },
           liquidity: pos.liquidity,
+          token0Balance: pos.token0Balance,
+          token1Balance: pos.token1Balance,
           tickLower: {
             id: pos.tickLower.id,
             tickIdx: pos.tickLower.tickIdx
