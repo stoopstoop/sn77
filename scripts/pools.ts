@@ -55,7 +55,7 @@ function formatNumber(num: number): string {
 }
 
 function formatAlphaBalance(alphaBalance: number): string {
-  return (alphaBalance / 1e9).toLocaleString(undefined, { maximumFractionDigits: 2 });
+  return (alphaBalance).toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
 function formatPercentage(num: number): string {
