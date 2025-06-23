@@ -1048,6 +1048,16 @@ function calculatePositionScore(position: LiquidityPosition, currentTick: number
          return { gaussianMultiplier: 0, liquidityAmount: 0, finalScore: 0, poolId: "", pairKey: "" };
     }
 
+    // Check for one-sided positions by validating token balances
+    const token0Balance = Number(position.token0Balance || "0");
+    const token1Balance = Number(position.token1Balance || "0");
+    const minTokenThreshold = 1e-6; // Minimum threshold for considering a token balance valid
+    
+    if (token0Balance <= minTokenThreshold || token1Balance <= minTokenThreshold) {
+        console.warn(`Cannot calculate score for position ${position.id}: one-sided position detected (token0Balance=${token0Balance}, token1Balance=${token1Balance})`);
+        return { gaussianMultiplier: 0, liquidityAmount: 0, finalScore: 0, poolId: position.pool.id || "", pairKey: "" };
+    }
+
     // Convert string numbers (including nested ticks) to actual numbers and validate
     const tickLower = Number(position.tickLower.tickIdx); // Access nested tickIdx
     const tickUpper = Number(position.tickUpper.tickIdx); // Access nested tickIdx
@@ -1111,6 +1121,7 @@ function calculatePositionScore(position: LiquidityPosition, currentTick: number
     console.log(`  Detailed Score Calculation for Pos ${position.id} (Pool: ${poolId}):`);
     console.log(`    - Ticks: Lower=${tickLower}, Upper=${tickUpper}, Mid=${midPoint.toFixed(1)}, Current=${currentTick}`);
     console.log(`    - Liquidity: Raw=${liquidityRaw}, Normalized=${liquidityAmount.toFixed(4)}`);
+    console.log(`    - Token Balances: token0=${token0Balance.toFixed(6)}, token1=${token1Balance.toFixed(6)}`);
     // Removed Range Check log as it's no longer directly used
     console.log(`    - Distances: Lower=${distanceLower.toFixed(1)}, Mid=${distanceMid.toFixed(1)}, Upper=${distanceUpper.toFixed(1)}`);
     console.log(`    - Gaussian Params: Amplitude=${GAUSSIAN_AMPLITUDE}, StdDev=${stdDev} (FeeTier: ${feeTier})`);

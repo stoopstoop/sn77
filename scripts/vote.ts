@@ -21,7 +21,9 @@ async function askQuestion(rl: readline.Interface, question: string): Promise<st
   });
 }
 
-async function getPoolsFromUser(): Promise<[Pool[], string | null]> {
+async function getPoolsFromUser(retractMode: boolean = false): Promise<[Pool[], string | null]> {
+  if (retractMode) return [[], null];
+
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout
@@ -109,7 +111,7 @@ async function getPoolsFromUser(): Promise<[Pool[], string | null]> {
   }
 }
 
-async function submitVotes() {
+async function submitVotes(retractMode: boolean = false) {
   await cryptoWaitReady();
 
   const privateKeyHex = process.env.HOLDER_COLDKEY;
@@ -133,11 +135,15 @@ async function submitVotes() {
   const coldkeyPair = sr25519PairFromSeed(seed);
   const coldkeyAddress = encodeAddress(coldkeyPair.publicKey, 42);
 
-  console.log('Generating vote submission...');
+  if (retractMode) {
+    console.log('Retracting all votes...');
+  } else {
+    console.log('Generating vote submission...');
+  }
   console.log('Coldkey Address:', coldkeyAddress);
   console.log('Current Block:', currentBlock);
 
-  const [pools, poolsErr] = await getPoolsFromUser();
+  const [pools, poolsErr] = await getPoolsFromUser(retractMode);
   if (poolsErr) {
     console.error('Error:', poolsErr);
     process.exit(1);
@@ -146,14 +152,18 @@ async function submitVotes() {
   const poolsStr = pools.map(pool => `${pool.address},${pool.weight}`).join(';');
   const votesMessage = `${poolsStr}|${currentBlock}`;
 
-  console.log('\nPool Allocations:');
-  pools.forEach((pool: Pool, index: number) => {
-    const tokenInfo = pool.token0Symbol && pool.token1Symbol 
-      ? ` (${pool.token0Symbol}/${pool.token1Symbol})`
-      : '';
-    console.log(`Pool ${index + 1}: ${formatAddress(pool.address)}${tokenInfo} (weight: ${pool.weight})`);
-  });
-  console.log('Total Weight:', pools.reduce((sum, pool) => sum + pool.weight, 0));
+  if (retractMode) {
+    console.log('\nRetracting all votes (empty allocation)');
+  } else {
+    console.log('\nPool Allocations:');
+    pools.forEach((pool: Pool, index: number) => {
+      const tokenInfo = pool.token0Symbol && pool.token1Symbol 
+        ? ` (${pool.token0Symbol}/${pool.token1Symbol})`
+        : '';
+      console.log(`Pool ${index + 1}: ${formatAddress(pool.address)}${tokenInfo} (weight: ${pool.weight})`);
+    });
+    console.log('Total Weight:', pools.reduce((sum, pool) => sum + pool.weight, 0));
+  }
 
   const coldkeySignatureBytes = sr25519Sign(votesMessage, coldkeyPair);
   const coldkeySignatureHex = u8aToHex(coldkeySignatureBytes);
@@ -177,7 +187,11 @@ async function submitVotes() {
       process.exit(1);
     }
 
-    console.log('\nSuccessfully submitted votes!');
+    if (retractMode) {
+      console.log('\nSuccessfully retracted all votes!');
+    } else {
+      console.log('\nSuccessfully submitted votes!');
+    }
   } catch (error) {
     console.error('Error making request:', error);
     process.exit(1);
@@ -185,13 +199,16 @@ async function submitVotes() {
 }
 
 const args = process.argv.slice(2);
-if (args.length > 0) {
-  console.error('Error: This script does not accept arguments');
-  console.error('Usage: HOLDER_COLDKEY=0x... bun run submitVotes');
+const retractMode = args.includes('--retract') || args.includes('-r');
+
+if (args.length > 0 && !retractMode) {
+  console.error('Error: Invalid arguments');
+  console.error('Usage: HOLDER_COLDKEY=0x... bun run submitVotes [--retract|-r]');
+  console.error('  --retract, -r: Retract all votes (send empty allocation)');
   process.exit(1);
 }
 
-submitVotes()
+submitVotes(retractMode)
   .then(async () => {
     await closeBittensorConnection();
     process.exit(0);

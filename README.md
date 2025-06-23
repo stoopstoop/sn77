@@ -47,6 +47,11 @@ just vote --votes 0xPOOL_A,6000;0xPOOL_B,4000
 # Alternatively just run
 just vote
 # and a prompt will ask you for the pools you wish to vote for
+
+# Retract all votes (send empty allocation)
+just vote --retract
+# or
+just vote -r
 ```
 
 **Setup required:**
@@ -112,7 +117,7 @@ bun run pools
 |--------|---------|-----------------|
 | `create-key.ts` | Generate or import an **EVM keypair** and derive the corresponding **SS58** address. Stores everything in `.keys/` and can update `.env`. | `bunx tsx scripts/create-key.ts` |
 | `register.ts` | Link a **Bittensor hotkey** → **EVM address** on-chain via `claimAddress`. Requires `MINER_HOTKEY` and `ETH_KEY` environment variables. | `just register` |
-| `vote.ts` | Interactive pool-weight voting. Searches and selects pools, then submits weighted votes that sum to 10000. | `just vote` |
+| `vote.ts` | Interactive pool-weight voting. Searches and selects pools, then submits weighted votes that sum to 10000. Supports retracting votes with `--retract` flag. | `just vote` |
 | `pools.ts` | Display current pool information from the API including pool details, voter information, and alpha token balances. | `just pools` |
 
 > Run scripts with `LOG=true` to enable verbose logging where available.
