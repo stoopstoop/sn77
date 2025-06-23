@@ -1,6 +1,6 @@
 {
   "name": "sn77-liquidity",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "devDependencies": {
     "@graphprotocol/graph-cli": "^0.96.0",
     "@graphprotocol/graph-ts": "^0.38.0",
@@ -31,6 +31,7 @@
     "yargs": "^18.0.0"
   },
   "scripts": {
-    "pools": "bunx tsx scripts/pools.ts"
+    "pools": "bunx tsx scripts/pools.ts",
+    "validator": "bunx tsx validator/index.ts"
   }
 }

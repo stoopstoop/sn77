@@ -1,3 +1,100 @@
+# Subnet77 Liquidity Auction & Voting
+
+This project focuses on deploying and managing the [`Subnet77LiquidityAuction.sol`](mdc:contracts/Subnet77LiquidityAuction.sol) and [`ClaimVote.sol`](mdc:contracts/ClaimVote.sol) smart contracts using Hardhat, along with associated helper scripts.
+
+## Core Contracts
+
+*   **Auction Contract:** [`contracts/Subnet77LiquidityAuction.sol`](mdc:contracts/Subnet77LiquidityAuction.sol)
+    *   Manages the liquidity pool auction, including bidding, price decay, and pool management.
+    *   **Refactored:** Pool storage was changed from a fixed array to a `mapping(uint256 => Pool)` where the key is a unique, non-reusable `poolId`. Active pools are tracked separately.
+    *   **Hard Link Note:** This file is a hard link to `/Users/creativebuilds/Projects/v3-bridge/contracts/Subnet77LiquidityAuction.sol`.
+*   **Voting Contract:** [`contracts/ClaimVote.sol`](mdc:contracts/ClaimVote.sol)
+    *   Allows users (identified by Bittensor public keys) to submit weighted votes for active pools listed in the Auction Contract.
+    *   Verifies Ed25519 signatures against submitted vote messages.
+    *   Uses the [`VerifySignature.sol`](mdc:contracts/VerifySignature.sol) library for signature verification.
+    *   Interacts with the Auction Contract via the [`ISubnet77LiquidityAuction.sol`](mdc:interfaces/ISubnet77LiquidityAuction.sol) interface to check pool validity and activity.
+*   **Testing Contract:** [`contracts/simpleAddStake.sol`](mdc:contracts/simpleAddStake.sol)
+    *   A minimal contract created to test the Bittensor `addStake` and `removeStake` precompiles directly.
+
+## Validator
+
+The validator (`validator/index.ts`) is responsible for:
+- Fetching weights from the central server
+- Setting weights on the Bittensor network
+- **Version compatibility checking** with automatic updates
+
+### Version Management
+
+The validator includes automatic version checking and update capabilities:
+
+#### Environment Variables
+- `AUTO_UPDATE_ENABLED`: Set to `true` to enable automatic updates (default: `false`)
+- `TEST_MODE`: Set to `true` to run in test mode (default: `false`)
+- `LOG`: Set to `true` to enable console logging (default: `false`)
+
+#### Features
+- **Periodic Version Checks**: Every 30 minutes, the validator pings the server to check version compatibility
+- **12-Hour Timeout**: If version incompatibility persists for 12 hours, the validator automatically shuts down
+- **Auto-Update**: When enabled, automatically pulls latest changes and restarts
+- **Persistent Warnings**: Version warnings are saved locally and checked on startup
+- **Graceful Degradation**: Version issues don't immediately stop the validator, allowing time for updates
+
+#### Running the Validator
+```bash
+# Using npm script
+bun run validator
+
+# Direct execution
+bunx tsx validator/index.ts
+```
+
+## Interfaces
+
+*   [`interfaces/ISubnet77LiquidityAuction.sol`](mdc:interfaces/ISubnet77LiquidityAuction.sol): Interface used by `ClaimVote.sol` to interact with `Subnet77LiquidityAuction.sol`.
+
+## Deployment
+
+*   Deployments are managed using the `hardhat-deploy` plugin.
+*   The deployment script for the auction contract is [`deploy/01-deploy-auction.js`](mdc:deploy/01-deploy-auction.js).
+    *   *Note: Deployment script for `ClaimVote.sol` needs to be created/updated.* This script likely needs to set the auction contract address in the deployed `ClaimVote` contract.
+*   Deployments can be run using `npx hardhat deploy`.
+
+## Configuration
+
+*   Hardhat configuration: [`hardhat.config.js`](mdc:hardhat.config.js) (includes `hardhat-deploy`).
+*   Node.js dependencies: [`package.json`](mdc:package.json).
+*   Environment Variables:
+    *   `.env`: Stores EVM `PRIVATE_KEY` for transaction signing, potentially RPC URLs.
+    *   `.env.tao`: Stores deployed contract addresses like `CLAIM_VOTE_ADDRESS`.
+
+## Scripts
+
+*   **Key Generation:** [`scripts/create-key.ts`](mdc:scripts/create-key.ts)
+    *   Generates or loads EVM wallets (from private key or mnemonic).
+    *   Derives the corresponding Bittensor SS58 address using the Frontier HashedAddressMapping (`evm:` prefix + blake2b hash).
+    *   Saves keys and addresses to `.env` and a JSON file in `.keys/`.
+*   **Voting:** [`scripts/vote.py`](mdc:scripts/vote.py)
+    *   Submits votes to the `ClaimVote.sol` contract.
+    *   Loads a Bittensor wallet by name (`--wallet.name`) using the `bittensor` Python library.
+    *   Signs the vote message using the wallet's **coldkey** (Ed25519).
+    *   Sends the transaction using the EVM `PRIVATE_KEY` from `.env`.
+    *   Requires Python environment and dependencies (see below).
+
+## Python Environment
+
+*   A Python virtual environment is used for Python scripts: `.venv/`
+*   Dependencies include `bittensor`, `web3.py`, `python-dotenv`.
+*   Activate using `source .venv/bin/activate`.
+*   Install dependencies using `pip install -r requirements.txt` (if a requirements file exists) or `pip install ...`.
+
+## Preferred Runtime: Bun
+
+This project uses Bun as the preferred JavaScript runtime and package manager.
+
+*   Use `bun install` instead of `npm install` or `yarn install`.
+*   Use `bun run <script>` instead of `npm run <script>` or `yarn <script>`.
+*   Use `bunx` instead of `npx`.
+
 # Subnet 77 – Liquidity
 
 > A complete on-chain liquidity mining system for the Bittensor ecosystem.
