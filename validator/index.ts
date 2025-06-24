@@ -128,8 +128,6 @@ interface LiquidityPosition {
         symbol: string;
     };
     liquidity: string;
-    token0Balance: string;
-    token1Balance: string;
     tickLower: {
         id: string;
         tickIdx: string;
@@ -215,7 +213,7 @@ const UNISWAP_V3_CLIENT = new GraphQLClient(UNISWAP_V3_SUBGRAPH_URL, {
 // Query to get positions for a specific owner
 const POSITIONS_QUERY = `
   query GetPositions($owner: String!, $poolIds: [String!]!) {
-    positions(where: { owner: $owner, pool_in: $poolIds, liquidity_gt:"1", token0Balance_gt: "0", token1Balance_gt: "0" }) {
+    positions(where: { owner: $owner, pool_in: $poolIds, liquidity_gt:"1" }) {
       id
       owner
       pool {
@@ -244,8 +242,6 @@ const POSITIONS_QUERY = `
         tickIdx
       }
       liquidity
-      token0Balance
-      token1Balance
     }
   }
 `;
@@ -279,8 +275,6 @@ interface UniswapPosition {
     tickIdx: string;
   };
   liquidity: string;
-  token0Balance: string;
-  token1Balance: string;
 }
 
 interface UniswapResponse {
@@ -1027,77 +1021,52 @@ function gaussianScore(distance: number, a: number = GAUSSIAN_AMPLITUDE, c: numb
  * @returns An object containing the Gaussian multiplier, liquidity amount, and final score.
  */
 function calculatePositionScore(position: LiquidityPosition, currentTick: number): PositionScore {
-    // Validate essential data presence
-    // Check for missing essential data individually for clearer warnings
-    if (!position.pool) {
-        console.warn(`Cannot calculate score for position ${position.id}: missing pool data.`);
+    if (!position.pool || !position.pool.tick) {
+        console.warn(`Cannot calculate score for position ${position.id}: position.pool.tick is undefined`);
         return { gaussianMultiplier: 0, liquidityAmount: 0, finalScore: 0, poolId: "", pairKey: "" };
-    }
-    // Updated check for tickLower and its nested tickIdx
-    if (typeof position.tickLower?.tickIdx === 'undefined' || position.tickLower.tickIdx === null) { 
-        console.warn(`Cannot calculate score for position ${position.id}: missing tickLower.tickIdx.`);
-        return { gaussianMultiplier: 0, liquidityAmount: 0, finalScore: 0, poolId: "", pairKey: "" };
-    }
-     // Updated check for tickUpper and its nested tickIdx
-    if (typeof position.tickUpper?.tickIdx === 'undefined' || position.tickUpper.tickIdx === null) { 
-        console.warn(`Cannot calculate score for position ${position.id}: missing tickUpper.tickIdx.`);
-        return { gaussianMultiplier: 0, liquidityAmount: 0, finalScore: 0, poolId: "", pairKey: "" };
-    }
-    if (typeof position.liquidity === 'undefined' || position.liquidity === null) { // Check for undefined or null
-        console.warn(`Cannot calculate score for position ${position.id}: missing liquidity.`);
-         return { gaussianMultiplier: 0, liquidityAmount: 0, finalScore: 0, poolId: "", pairKey: "" };
-    }
-
-    // Check for one-sided positions by validating token balances
-    const token0Balance = Number(position.token0Balance || "0");
-    const token1Balance = Number(position.token1Balance || "0");
-    const minTokenThreshold = 1e-6; // Minimum threshold for considering a token balance valid
-    
-    if (token0Balance <= minTokenThreshold || token1Balance <= minTokenThreshold) {
-        console.warn(`Cannot calculate score for position ${position.id}: one-sided position detected (token0Balance=${token0Balance}, token1Balance=${token1Balance})`);
-        return { gaussianMultiplier: 0, liquidityAmount: 0, finalScore: 0, poolId: position.pool.id || "", pairKey: "" };
     }
 
     // Convert string numbers (including nested ticks) to actual numbers and validate
-    const tickLower = Number(position.tickLower.tickIdx); // Access nested tickIdx
-    const tickUpper = Number(position.tickUpper.tickIdx); // Access nested tickIdx
+    const tickLower = Number(position.tickLower.tickIdx);
+    const tickUpper = Number(position.tickUpper.tickIdx);
+
+    // A position is only active if the current tick is within its range.
+    if (currentTick < tickLower || currentTick >= tickUpper) {
+        console.log(`Position ${position.id} is not active. Current tick ${currentTick} is outside of range [${tickLower}, ${tickUpper}). Assigning score of 0.`);
+        return { gaussianMultiplier: 0, liquidityAmount: 0, finalScore: 0, poolId: position.pool.id || "", pairKey: "" };
+    }
+    
     const liquidityRaw = Number(position.liquidity);
-    const poolId = position.pool.id;
-    const pairKey = position.token0.id < position.token1.id ? `${position.token0.id}-${position.token1.id}` : `${position.token1.id}-${position.token0.id}`;
+    const feeTier = position.pool.feeTier;
 
-    if (isNaN(tickLower) || isNaN(tickUpper) || isNaN(liquidityRaw) || isNaN(currentTick)) {
-         console.warn(`Cannot calculate score for position ${position.id}: invalid numeric data (tickLower=${position.tickLower.tickIdx}, tickUpper=${position.tickUpper.tickIdx}, liquidity=${position.liquidity}, or currentTick=${currentTick}).`);
-         return { gaussianMultiplier: 0, liquidityAmount: 0, finalScore: 0, poolId: poolId, pairKey: pairKey };
+    // Validate essential data presence
+    // Check for missing essential data individually for clearer warnings
+    if (!position.liquidity) {
+        console.warn(`Cannot calculate score for position ${position.id}: position.liquidity is missing`);
+        return { gaussianMultiplier: 0, liquidityAmount: 0, finalScore: 0, poolId: "", pairKey: "" };
     }
-
-     // Ensure tickLower is actually lower than tickUpper
-    if (tickLower >= tickUpper) {
-        console.warn(`Cannot calculate score for position ${position.id}: tickLower (${tickLower}) must be less than tickUpper (${tickUpper}).`);
-        return { gaussianMultiplier: 0, liquidityAmount: 0, finalScore: 0, poolId: poolId, pairKey: pairKey };
+    if (!feeTier) {
+        console.warn(`Cannot calculate score for position ${position.id}: position.pool.feeTier is missing`);
+        return { gaussianMultiplier: 0, liquidityAmount: 0, finalScore: 0, poolId: "", pairKey: "" };
     }
-
-    // Determine if the current tick is within the position's active range
-    const isInRange = currentTick >= tickLower && currentTick <= tickUpper;
-
-    let distanceForGaussian: number;
-
-    if (isInRange) {
-        // If the tick is within the range, the position is active. Use distance 0 for max Gaussian score.
-        distanceForGaussian = 0;
-    } else {
-        // If the tick is outside the range, calculate the distance to the *nearest* edge.
-        const distanceToLower = Math.abs(currentTick - tickLower);
-        const distanceToUpper = Math.abs(currentTick - tickUpper);
-        distanceForGaussian = Math.min(distanceToLower, distanceToUpper);
+    if (!position.tickLower || !position.tickLower.tickIdx) {
+        console.warn(`Cannot calculate score for position ${position.id}: position.tickLower.tickIdx is missing`);
+        return { gaussianMultiplier: 0, liquidityAmount: 0, finalScore: 0, poolId: "", pairKey: "" };
+    }
+    if (!position.tickUpper || !position.tickUpper.tickIdx) {
+        console.warn(`Cannot calculate score for position ${position.id}: position.tickUpper.tickIdx is missing`);
+        return { gaussianMultiplier: 0, liquidityAmount: 0, finalScore: 0, poolId: "", pairKey: "" };
     }
 
     // Get fee tier specific std dev, default if not found
-    const feeTier = position.pool.feeTier;
     const stdDev = FEE_TIER_STD_DEVS[feeTier] ?? DEFAULT_STD_DEV;
 
-    // --- Simpson's Rule Approximation for Average Gaussian Multiplier --- 
+    // --------------------------------------------------------------------
+    // Gaussian Score Calculation (for proximity)
+    // - We want to reward positions that are close to the current tick.
+    // - We use a Gaussian-like function for this.
+    // --------------------------------------------------------------------
     const midPoint = (tickLower + tickUpper) / 2;
-
     const distanceLower = Math.abs(currentTick - tickLower);
     const distanceUpper = Math.abs(currentTick - tickUpper);
     const distanceMid = Math.abs(currentTick - midPoint);
@@ -1118,11 +1087,14 @@ function calculatePositionScore(position: LiquidityPosition, currentTick: number
 
 
     // --- Detailed Logging --- 
+    const poolId = position.pool.id;
+    const token0Symbol = position.token0.symbol;
+    const token1Symbol = position.token1.symbol;
+    const pairKey = `${token0Symbol}-${token1Symbol}`;
+
     console.log(`  Detailed Score Calculation for Pos ${position.id} (Pool: ${poolId}):`);
     console.log(`    - Ticks: Lower=${tickLower}, Upper=${tickUpper}, Mid=${midPoint.toFixed(1)}, Current=${currentTick}`);
     console.log(`    - Liquidity: Raw=${liquidityRaw}, Normalized=${liquidityAmount.toFixed(4)}`);
-    console.log(`    - Token Balances: token0=${token0Balance.toFixed(6)}, token1=${token1Balance.toFixed(6)}`);
-    // Removed Range Check log as it's no longer directly used
     console.log(`    - Distances: Lower=${distanceLower.toFixed(1)}, Mid=${distanceMid.toFixed(1)}, Upper=${distanceUpper.toFixed(1)}`);
     console.log(`    - Gaussian Params: Amplitude=${GAUSSIAN_AMPLITUDE}, StdDev=${stdDev} (FeeTier: ${feeTier})`);
     console.log(`    - Scores: Lower=${scoreLower.toFixed(4)}, Mid=${scoreMid.toFixed(4)}, Upper=${scoreUpper.toFixed(4)}`);
@@ -1260,8 +1232,6 @@ async function fetchLiquidityPositions(
             name: pos.pool.token1.name || pos.pool.token1.symbol
           },
           liquidity: pos.liquidity,
-          token0Balance: pos.token0Balance,
-          token1Balance: pos.token1Balance,
           tickLower: {
             id: pos.tickLower.id,
             tickIdx: pos.tickLower.tickIdx
